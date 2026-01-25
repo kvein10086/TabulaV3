@@ -2,9 +2,11 @@ package com.tabula.v3.ui.screens
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,11 +15,14 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Email
+import androidx.compose.material.icons.outlined.MarkEmailRead
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -30,8 +35,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -193,7 +200,7 @@ fun AboutScreen(
                 }
                 
                 Spacer(modifier = Modifier.height(16.dp))
-                
+
                 // 隐私声明卡片
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -211,9 +218,9 @@ fun AboutScreen(
                             ),
                             color = textColor
                         )
-                        
+
                         Spacer(modifier = Modifier.height(12.dp))
-                        
+
                         Text(
                             text = "Tabula 完全在本地运行，不会收集、上传或共享您的任何照片和数据。您的隐私是我们的首要关注。",
                             style = MaterialTheme.typography.bodyMedium,
@@ -222,26 +229,115 @@ fun AboutScreen(
                         )
                     }
                 }
-                
-                Spacer(modifier = Modifier.height(48.dp))
-                
-                // 底部版权
-                Text(
-                    text = "Made with ❤️",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = secondaryTextColor.copy(alpha = 0.8f),
-                    textAlign = TextAlign.Center
-                )
-                
-                Spacer(modifier = Modifier.height(8.dp))
-                
-                Text(
-                    text = "© 2026 Tabula",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = secondaryTextColor.copy(alpha = 0.6f),
-                    textAlign = TextAlign.Center
-                )
-                
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // 联系作者卡片
+                val context = LocalContext.current
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = cardColor),
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp)
+                    ) {
+                        Text(
+                            text = "联系作者",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = textColor
+                        )
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // 邮箱
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                    clipboard.setPrimaryClip(
+                                        android.content.ClipData.newPlainText(
+                                            "email",
+                                            "2922147939@qq.com"
+                                        )
+                                    )
+                                }
+                                .padding(vertical = 8.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Email,
+                                contentDescription = "邮箱",
+                                tint = textColor,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "作者邮箱",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = secondaryTextColor
+                                )
+                                Text(
+                                    text = "2922147939@qq.com",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = textColor
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // GitHub
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW,
+                                        android.net.Uri.parse("https://github.com/Doryoku1223/TabulaV3")
+                                    ).also { context.startActivity(it) }
+                                }
+                                .padding(vertical = 8.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.MarkEmailRead,
+                                contentDescription = "GitHub",
+                                tint = textColor,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "GitHub 仓库",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = secondaryTextColor
+                                )
+                                Text(
+                                    text = "github.com/Doryoku1223/TabulaV3",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = textColor
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // 底部提示文字
+                        Text(
+                            text = "欢迎提交 issue 来帮助改进完善 Tabula!",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = secondaryTextColor.copy(alpha = 0.8f),
+                            fontStyle = FontStyle.Italic
+                        )
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(32.dp))
             }
         }
