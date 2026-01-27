@@ -58,10 +58,11 @@ import com.tabula.v3.ui.util.HapticFeedback
  */
 @Composable
 fun StatisticsScreen(
-    reviewedCount: Int = 1250, // 模拟累计数据
-    totalImages: Int = 8636,   // 模拟总数
-    deletedCount: Int = 450,   // 模拟累计删除
-    markedCount: Int = 13,     // 当前标记
+    reviewedCount: Int = 0,
+    totalImages: Int = 0,
+    deletedCount: Int = 0,
+    markedCount: Int = 0,
+    remainingCount: Int = 0,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -219,7 +220,7 @@ fun StatisticsScreen(
                     icon = Icons.Outlined.Image,
                     iconColor = Color(0xFF0A84FF),
                     label = "剩余整理",
-                    value = "${totalImages - reviewedCount} 张",
+                    value = "$remainingCount 张",
                     textColor = textColor
                 )
             }

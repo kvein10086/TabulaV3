@@ -175,36 +175,66 @@ fun SwipeableCardStack(
 
     /**
      * 执行洗牌动画（插底 + 顶上）
+     * 
+     * 当滑到最后一张时，使用平滑的淡出过渡，避免回弹感
      */
     suspend fun executeShuffleAnimation(direction: Int) {
         isTransitioning = true
         pendingIndexChange = direction
 
-        val targetX = if (direction > 0) -baseOffsetPx else baseOffsetPx
-        val targetRotation = if (direction > 0) -8f else 8f
+        // 检查是否滑到最后一张
+        val isLastCard = direction > 0 && currentIndex >= images.lastIndex
 
-        scope.launch { dragOffsetX.animateTo(targetX, tween(shuffleAnimDuration)) }
-        scope.launch { dragOffsetY.animateTo(0f, tween(shuffleAnimDuration)) }
-        scope.launch { dragRotation.animateTo(targetRotation, tween(shuffleAnimDuration)) }
+        if (isLastCard) {
+            // 滑动到完成页面：使用平滑淡出，不要回弹
+            val targetX = -screenWidthPx * 0.4f
+            val targetRotation = -12f
+            
+            // 使用更长的动画时间和淡出效果
+            scope.launch { dragOffsetX.animateTo(targetX, tween(200)) }
+            scope.launch { dragOffsetY.animateTo(-50f, tween(200)) }
+            scope.launch { dragRotation.animateTo(targetRotation, tween(200)) }
+            scope.launch { dragAlpha.animateTo(0.3f, tween(200)) }
+            scope.launch { dragScale.animateTo(0.9f, tween(200)) }
 
-        kotlinx.coroutines.delay(shuffleAnimDuration.toLong() / 2)
+            kotlinx.coroutines.delay(150)
 
-        // 计算新索引：允许超出边界，让调用方决定是否进入完成页面
-        val newIndex = when {
-            direction > 0 -> currentIndex + 1  // 右滑始终 +1，即使超出边界
-            direction < 0 && hasPrev -> currentIndex - 1
-            else -> currentIndex
+            // 通知进入完成页面
+            onIndexChange(currentIndex + 1)
+
+            // 重置状态（不需要回弹，因为页面会切换）
+            dragOffsetX.snapTo(0f)
+            dragOffsetY.snapTo(0f)
+            dragRotation.snapTo(0f)
+            dragAlpha.snapTo(1f)
+            dragScale.snapTo(1f)
+        } else {
+            // 正常的洗牌动画
+            val targetX = if (direction > 0) -baseOffsetPx else baseOffsetPx
+            val targetRotation = if (direction > 0) -8f else 8f
+
+            scope.launch { dragOffsetX.animateTo(targetX, tween(shuffleAnimDuration)) }
+            scope.launch { dragOffsetY.animateTo(0f, tween(shuffleAnimDuration)) }
+            scope.launch { dragRotation.animateTo(targetRotation, tween(shuffleAnimDuration)) }
+
+            kotlinx.coroutines.delay(shuffleAnimDuration.toLong() / 2)
+
+            // 计算新索引
+            val newIndex = when {
+                direction > 0 -> currentIndex + 1
+                direction < 0 && hasPrev -> currentIndex - 1
+                else -> currentIndex
+            }
+
+            if (newIndex != currentIndex) {
+                onIndexChange(newIndex)
+            }
+
+            dragOffsetX.snapTo(0f)
+            dragOffsetY.snapTo(0f)
+            dragRotation.snapTo(0f)
+            dragAlpha.snapTo(1f)
         }
-
-        // 始终通知索引变化（调用方会处理边界情况）
-        if (newIndex != currentIndex) {
-            onIndexChange(newIndex)
-        }
-
-        dragOffsetX.snapTo(0f)
-        dragOffsetY.snapTo(0f)
-        dragRotation.snapTo(0f)
-        dragAlpha.snapTo(1f)
 
         isTransitioning = false
         lockedDirection = SwipeDirection.NONE

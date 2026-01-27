@@ -112,6 +112,56 @@ class LocalImageRepository(private val context: Context) {
     }
 
     /**
+     * 系统相册信息
+     */
+    data class SystemBucket(
+        val name: String,
+        val imageCount: Int,
+        val coverImageId: Long? = null
+    )
+
+    /**
+     * 获取所有系统相册及其图片数量
+     *
+     * @return 系统相册列表（包含名称、数量、封面）
+     */
+    suspend fun getAllBucketsWithInfo(): List<SystemBucket> = withContext(Dispatchers.IO) {
+        val bucketMap = mutableMapOf<String, MutableList<Long>>()
+
+        val projection = arrayOf(
+            MediaStore.Images.Media._ID,
+            MediaStore.Images.Media.BUCKET_DISPLAY_NAME
+        )
+
+        contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            projection,
+            null,
+            null,
+            "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
+        )?.use { cursor ->
+            val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+            val bucketColumn = cursor.getColumnIndexOrThrow(
+                MediaStore.Images.Media.BUCKET_DISPLAY_NAME
+            )
+
+            while (cursor.moveToNext()) {
+                val bucketName = cursor.getString(bucketColumn) ?: continue
+                val imageId = cursor.getLong(idColumn)
+                bucketMap.getOrPut(bucketName) { mutableListOf() }.add(imageId)
+            }
+        }
+
+        bucketMap.map { (name, ids) ->
+            SystemBucket(
+                name = name,
+                imageCount = ids.size,
+                coverImageId = ids.firstOrNull() // 最新的一张作为封面
+            )
+        }.sortedByDescending { it.imageCount }
+    }
+
+    /**
      * 基础查询方法
      */
     private fun queryImages(

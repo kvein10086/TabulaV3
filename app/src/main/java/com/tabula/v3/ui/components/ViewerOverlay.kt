@@ -265,11 +265,11 @@ fun ViewerOverlay(
     val currentY = lerp(source.y, targetY, progress)
 
     // 尺寸插值
-    val currentWidth = lerp(source.width, targetWidth, progress)
-    val currentHeight = lerp(source.height, targetHeight, progress)
+    val currentWidth = lerp(source.width, targetWidth, progress).coerceAtLeast(0f)
+    val currentHeight = lerp(source.height, targetHeight, progress).coerceAtLeast(0f)
 
-    // 圆角插值
-    val currentCornerRadius = lerp(source.cornerRadius, 4f, progress)
+    // 圆角插值 (防止负数导致 Crash)
+    val currentCornerRadius = lerp(source.cornerRadius, 4f, progress).coerceAtLeast(0f)
 
     // 转换为 dp
     val currentWidthDp = with(density) { currentWidth.toDp() }

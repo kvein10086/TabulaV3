@@ -145,6 +145,87 @@ class AppPreferences(context: Context) {
         get() = prefs.getLong(KEY_TOTAL_DELETED, 0L)
         set(value) = prefs.edit().putLong(KEY_TOTAL_DELETED, value).apply()
 
+    /**
+     * 推荐模式（随机漫步 / 相似推荐）
+     */
+    var recommendMode: RecommendMode
+        get() {
+            val value = prefs.getString(KEY_RECOMMEND_MODE, RecommendMode.RANDOM_WALK.name)
+            return RecommendMode.valueOf(value ?: RecommendMode.RANDOM_WALK.name)
+        }
+        set(value) {
+            prefs.edit().putString(KEY_RECOMMEND_MODE, value.name).apply()
+        }
+
+    // 照片抽取时间戳和冷却天数记录（用于冷却期逻辑）
+    private val pickTimestampsPrefs: SharedPreferences = context.getSharedPreferences(
+        PICK_TIMESTAMPS_PREFS_NAME,
+        Context.MODE_PRIVATE
+    )
+
+    /**
+     * 可选的冷却天数（随机分配）
+     */
+    private val cooldownOptions = listOf(7, 12, 24)
+
+    /**
+     * 记录照片被抽取的时间，并随机分配冷却天数
+     */
+    fun recordImagePicked(imageId: Long) {
+        val randomCooldownDays = cooldownOptions.random()
+        pickTimestampsPrefs.edit()
+            .putLong("time_$imageId", System.currentTimeMillis())
+            .putInt("days_$imageId", randomCooldownDays)
+            .apply()
+    }
+
+    /**
+     * 获取照片上次被抽取的时间，如果从未被抽取则返回0
+     */
+    fun getImagePickedTimestamp(imageId: Long): Long {
+        return pickTimestampsPrefs.getLong("time_$imageId", 0L)
+    }
+
+    /**
+     * 获取照片的冷却天数
+     */
+    fun getImageCooldownDays(imageId: Long): Int {
+        return pickTimestampsPrefs.getInt("days_$imageId", cooldownOptions.first())
+    }
+
+    /**
+     * 检查照片是否在冷却期内
+     */
+    fun isImageInCooldown(imageId: Long): Boolean {
+        val pickedTime = getImagePickedTimestamp(imageId)
+        if (pickedTime == 0L) return false
+        val cooldownDays = getImageCooldownDays(imageId)
+        val cooldownMillis = cooldownDays.toLong() * 24 * 60 * 60 * 1000
+        return System.currentTimeMillis() - pickedTime < cooldownMillis
+    }
+
+    /**
+     * 清理过期的抽取记录
+     * 使用最大冷却期（24天）来判断是否过期
+     */
+    fun cleanupExpiredPickRecords() {
+        val maxCooldownMillis = 24L * 24 * 60 * 60 * 1000 // 24天
+        val now = System.currentTimeMillis()
+        val editor = pickTimestampsPrefs.edit()
+        val keysToRemove = mutableListOf<String>()
+        
+        pickTimestampsPrefs.all.forEach { (key, value) ->
+            if (key.startsWith("time_") && value is Long && now - value > maxCooldownMillis) {
+                val imageId = key.removePrefix("time_")
+                keysToRemove.add("time_$imageId")
+                keysToRemove.add("days_$imageId")
+            }
+        }
+        
+        keysToRemove.forEach { editor.remove(it) }
+        editor.apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "tabula_prefs"
         private const val KEY_SORT_ORDER = "sort_order"
@@ -161,7 +242,9 @@ class AppPreferences(context: Context) {
         private const val KEY_TOP_BAR_MODE = "top_bar_mode"
         private const val KEY_TOTAL_REVIEWED = "total_reviewed"
         private const val KEY_TOTAL_DELETED = "total_deleted"
+        private const val KEY_RECOMMEND_MODE = "recommend_mode"
 
+        private const val PICK_TIMESTAMPS_PREFS_NAME = "tabula_pick_timestamps"
 
         const val DEFAULT_BATCH_SIZE = 15
         val BATCH_SIZE_OPTIONS = listOf(5, 10, 15, 20, 30, 50)
@@ -192,6 +275,14 @@ enum class ThemeMode {
 enum class TopBarDisplayMode {
     INDEX,    // 显示 x/xx 索引
     DATE      // 显示 2023 Jul 日期
+}
+
+/**
+ * 推荐模式枚举
+ */
+enum class RecommendMode {
+    RANDOM_WALK,    // 随机漫步 - 真正随机，带冷却期
+    SIMILAR         // 相似推荐 - 优先推荐相似照片
 }
 
 /**

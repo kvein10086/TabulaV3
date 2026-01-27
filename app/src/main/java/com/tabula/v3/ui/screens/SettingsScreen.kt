@@ -30,6 +30,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Analytics
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Collections
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Image
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.Numbers
+import androidx.compose.material.icons.outlined.Shuffle
 import androidx.compose.material.icons.outlined.TextFormat
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.Vibration
@@ -74,6 +76,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.tabula.v3.R
 import com.tabula.v3.data.preferences.AppPreferences
+import com.tabula.v3.data.preferences.RecommendMode
 import com.tabula.v3.data.preferences.ThemeMode
 import com.tabula.v3.data.preferences.TopBarDisplayMode
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
@@ -90,6 +93,7 @@ fun SettingsScreen(
     preferences: AppPreferences,
     imageCount: Int,
     trashCount: Int,
+    albumCount: Int = 0,
     onThemeChange: (ThemeMode) -> Unit,
     onBatchSizeChange: (Int) -> Unit,
     onTopBarModeChange: (TopBarDisplayMode) -> Unit,
@@ -109,7 +113,8 @@ fun SettingsScreen(
     onSwipeHapticsEnabledChange: (Boolean) -> Unit,
     onNavigateToAbout: () -> Unit,
     onNavigateBack: () -> Unit,
-    onNavigateToStatistics: () -> Unit = {} // 新增回调，暂给默认值避免报错
+    onNavigateToStatistics: () -> Unit = {},
+    onNavigateToAlbums: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val isDarkTheme = LocalIsDarkTheme.current
@@ -135,12 +140,14 @@ fun SettingsScreen(
     var currentHapticEnabled by remember { mutableStateOf(hapticEnabled) }
     var currentHapticStrength by remember { mutableIntStateOf(hapticStrength) }
     var currentSwipeHapticsEnabled by remember { mutableStateOf(swipeHapticsEnabled) }
+    var currentRecommendMode by remember { mutableStateOf(preferences.recommendMode) }
 
     // 底栏状态
     var showThemeSheet by remember { mutableStateOf(false) }
     var showBatchSizeSheet by remember { mutableStateOf(false) }
     var showTopBarModeSheet by remember { mutableStateOf(false) }
     var showVibrationSoundPage by remember { mutableStateOf(false) }
+    var showRecommendModeSheet by remember { mutableStateOf(false) }
 
     BackHandler(enabled = showVibrationSoundPage) {
         HapticFeedback.lightTap(context)
@@ -299,6 +306,26 @@ fun SettingsScreen(
                         showBatchSizeSheet = true
                     }
                 )
+                
+                Divider(isDarkTheme)
+                
+                SettingsItem(
+                    icon = Icons.Outlined.Shuffle,
+                    iconTint = Color(0xFFBF5AF2), // Purple
+                    title = "推荐模式",
+                    value = when (currentRecommendMode) {
+                        RecommendMode.RANDOM_WALK -> "随机漫步"
+                        RecommendMode.SIMILAR -> "相似推荐"
+                    },
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor,
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        showRecommendModeSheet = true
+                    }
+                )
+                
+                // 冷却期设置已移除，改为自动随机分配
                 
                 Divider(isDarkTheme)
                 
@@ -546,6 +573,39 @@ fun SettingsScreen(
                     preferences.topBarDisplayMode = mode
                     onTopBarModeChange(mode)
                     showTopBarModeSheet = false
+                }
+            }
+        }
+
+        // 推荐模式选择
+        if (showRecommendModeSheet) {
+            CustomBottomSheet(
+                title = "推荐模式",
+                onDismiss = { showRecommendModeSheet = false },
+                containerColor = cardColor,
+                textColor = textColor
+            ) {
+                OptionItem(
+                    title = "随机漫步",
+                    subtitle = "真正随机抽取，已看过的照片短期内不会再次出现",
+                    isSelected = currentRecommendMode == RecommendMode.RANDOM_WALK,
+                    accentColor = accentColor,
+                    textColor = textColor
+                ) {
+                    currentRecommendMode = RecommendMode.RANDOM_WALK
+                    preferences.recommendMode = RecommendMode.RANDOM_WALK
+                    showRecommendModeSheet = false
+                }
+                OptionItem(
+                    title = "相似推荐",
+                    subtitle = "优先推荐相似照片，帮助清理连拍和重复照片",
+                    isSelected = currentRecommendMode == RecommendMode.SIMILAR,
+                    accentColor = accentColor,
+                    textColor = textColor
+                ) {
+                    currentRecommendMode = RecommendMode.SIMILAR
+                    preferences.recommendMode = RecommendMode.SIMILAR
+                    showRecommendModeSheet = false
                 }
             }
         }
@@ -1086,6 +1146,52 @@ fun OptionItem(
             style = MaterialTheme.typography.bodyLarge,
             color = textColor
         )
+        if (isSelected) {
+            Icon(
+                imageVector = Icons.Outlined.Check,
+                contentDescription = null,
+                tint = accentColor,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+/**
+ * 带副标题的选项项
+ */
+@Composable
+fun OptionItem(
+    title: String,
+    subtitle: String,
+    isSelected: Boolean,
+    accentColor: Color,
+    textColor: Color,
+    onClick: () -> Unit
+) {
+    val secondaryTextColor = textColor.copy(alpha = 0.6f)
+    
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = textColor
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = secondaryTextColor
+            )
+        }
         if (isSelected) {
             Icon(
                 imageVector = Icons.Outlined.Check,

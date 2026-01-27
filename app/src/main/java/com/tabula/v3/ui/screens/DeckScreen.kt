@@ -7,19 +7,36 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -32,7 +49,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -40,18 +59,27 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tabula.v3.R
+import com.tabula.v3.data.model.Album
 import com.tabula.v3.data.model.ImageFile
 import com.tabula.v3.data.preferences.TopBarDisplayMode
+import com.tabula.v3.data.repository.LocalImageRepository
+import com.tabula.v3.ui.components.AlbumChips
+import com.tabula.v3.ui.components.AlbumChipsEmpty
+import com.tabula.v3.ui.components.AlbumEditDialog
 import com.tabula.v3.ui.components.BatchCompletionScreen
-import com.tabula.v3.ui.components.BottomIndicator
+import com.tabula.v3.ui.components.CategorizedAlbumsView
+import com.tabula.v3.ui.components.DraggableAlbumsGrid
+import com.tabula.v3.ui.components.ModeToggle
 import com.tabula.v3.ui.components.SourceRect
 import com.tabula.v3.ui.components.SwipeableCardStack
 import com.tabula.v3.ui.components.TopBar
+import com.tabula.v3.ui.components.UndoSnackbar
 import com.tabula.v3.ui.components.ViewerOverlay
 import com.tabula.v3.ui.components.ViewerState
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.theme.TabulaColors
 import com.tabula.v3.ui.util.HapticFeedback
+import kotlinx.coroutines.launch
 
 /**
  * Deck 屏幕状态
@@ -88,11 +116,31 @@ fun DeckScreen(
     onKeep: () -> Unit = {},
     onNavigateToTrash: () -> Unit,
     onNavigateToSettings: () -> Unit,
+    onNavigateToAlbumDetail: (Album) -> Unit = {},
+    onNavigateToAlbums: () -> Unit = {},
     showHdrBadges: Boolean = false,
     showMotionBadges: Boolean = false,
     playMotionSound: Boolean = true,
     motionSoundVolume: Int = 100,
-    enableSwipeHaptics: Boolean = true
+    enableSwipeHaptics: Boolean = true,
+    // 推荐算法回调
+    getRecommendedBatch: suspend (List<ImageFile>, Int) -> List<ImageFile> = { images, size -> 
+        images.shuffled().take(size) 
+    },
+    // 相册归类相关
+    albums: List<Album> = emptyList(),
+    systemBuckets: List<LocalImageRepository.SystemBucket> = emptyList(),
+    currentImageAlbumIds: Set<String> = emptySet(),
+    onAlbumSelect: (imageId: Long, imageUri: String, albumId: String) -> Unit = { _, _, _ -> },
+    onCreateAlbum: (name: String, color: Long?, emoji: String?) -> Unit = { _, _, _ -> },
+    onUndoAlbumAction: () -> Unit = {},
+    onReorderAlbums: (List<String>) -> Unit = {},
+    onSystemBucketClick: (String) -> Unit = {},
+    onSyncClick: () -> Unit = {},
+    lastAlbumActionName: String? = null,
+    // 模式切换
+    isAlbumMode: Boolean = false,
+    onModeChange: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val isDarkTheme = LocalIsDarkTheme.current
@@ -107,20 +155,46 @@ fun DeckScreen(
     // ========== 查看器状态 ==========
     var viewerState by remember { mutableStateOf<ViewerState?>(null) }
 
-    // 初始化批次
-    if (currentBatch.isEmpty() && allImages.isNotEmpty() && !isLoading) {
-        currentBatch = allImages.shuffled().take(batchSize)
-        currentIndex = 0
-        markedCount = 0
-        deckState = DeckState.BROWSING
+    // ========== 相册归类状态 ==========
+    var showCreateAlbumDialog by remember { mutableStateOf(false) }
+    var showUndoSnackbar by remember { mutableStateOf(false) }
+    var undoMessage by remember { mutableStateOf("") }
+
+    // 用于异步初始化批次
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var needsInitialBatch by remember { mutableStateOf(true) }
+
+    // 异步初始化批次
+    androidx.compose.runtime.LaunchedEffect(allImages, isLoading, needsInitialBatch) {
+        if (currentBatch.isEmpty() && allImages.isNotEmpty() && !isLoading && needsInitialBatch) {
+            needsInitialBatch = false
+            val newBatch = getRecommendedBatch(allImages, batchSize)
+            
+            if (newBatch.isNotEmpty()) {
+                currentBatch = newBatch
+                currentIndex = 0
+                markedCount = 0
+                deckState = DeckState.BROWSING
+            } else {
+                // 如果推荐结果为空（例如都在冷却中），直接显示完成状态
+                deckState = DeckState.COMPLETED
+            }
+        }
     }
 
     // 开始新一组
     fun startNewBatch() {
-        currentBatch = allImages.shuffled().take(batchSize)
-        currentIndex = 0
-        markedCount = 0
-        deckState = DeckState.BROWSING
+        scope.launch {
+            val newBatch = getRecommendedBatch(allImages, batchSize)
+            if (newBatch.isNotEmpty()) {
+                currentBatch = newBatch
+                currentIndex = 0
+                markedCount = 0
+                deckState = DeckState.BROWSING
+            } else {
+                 deckState = DeckState.COMPLETED
+            }
+        }
     }
 
     // 处理返回键（关闭查看器）
@@ -136,8 +210,10 @@ fun DeckScreen(
         AnimatedContent(
             targetState = when {
                 isLoading -> "loading"
+                isAlbumMode -> "albums"  // 图集模式
                 allImages.isEmpty() -> "empty"
                 deckState == DeckState.COMPLETED -> "completed"
+                currentBatch.isEmpty() -> "loading" // 等待批次加载
                 else -> "browsing"
             },
             transitionSpec = {
@@ -156,8 +232,26 @@ fun DeckScreen(
                         onViewMarked = onNavigateToTrash
                     )
                 }
+                "albums" -> {
+                    // 图集模式 - 显示相册列表
+                    AlbumsGridContent(
+                        albums = albums,
+                        systemBuckets = systemBuckets,
+                        allImages = allImages,
+                        onCreateAlbum = onCreateAlbum,
+                        onAlbumClick = onNavigateToAlbumDetail,
+                        onSystemBucketClick = onSystemBucketClick,
+                        isAlbumMode = isAlbumMode,
+                        onModeChange = onModeChange,
+                        onReorderAlbums = onReorderAlbums,
+                        onSyncClick = onSyncClick,
+                        onSettingsClick = onNavigateToSettings
+                    )
+                }
                 else -> {
                     // 浏览模式
+                    val currentImage = currentBatch.getOrNull(currentIndex)
+                    
                     DeckContent(
                         images = currentBatch,
                         currentIndex = currentIndex,
@@ -165,6 +259,8 @@ fun DeckScreen(
                         showHdrBadges = showHdrBadges,
                         showMotionBadges = showMotionBadges,
                         enableSwipeHaptics = enableSwipeHaptics,
+                        albums = albums,
+                        currentImageAlbumIds = currentImageAlbumIds,
                         onIndexChange = { newIndex ->
                             // 如果向后滑超过最后一张，进入完成页面
                             if (newIndex >= currentBatch.size) {
@@ -198,7 +294,23 @@ fun DeckScreen(
                             viewerState = ViewerState(image, sourceRect)
                         },
                         onTrashClick = onNavigateToTrash,
-                        onSettingsClick = onNavigateToSettings
+                        onSettingsClick = onNavigateToSettings,
+                        onAlbumClick = { album ->
+                            currentImage?.let { image ->
+                                onAlbumSelect(image.id, image.uri.toString(), album.id)
+                                undoMessage = "已添加到「${album.name}」"
+                                showUndoSnackbar = true
+                                // 自动进入下一张
+                                if (currentIndex < currentBatch.lastIndex) {
+                                    currentIndex++
+                                    onKeep()
+                                }
+                            }
+                        },
+                        onAddAlbumClick = { showCreateAlbumDialog = true },
+                        onAlbumsClick = onNavigateToAlbums,
+                        isAlbumMode = isAlbumMode,
+                        onModeChange = onModeChange
                     )
                 }
             }
@@ -215,6 +327,30 @@ fun DeckScreen(
                 motionSoundVolume = motionSoundVolume
             )
         }
+
+        // 撤销 Snackbar
+        UndoSnackbar(
+            visible = showUndoSnackbar,
+            message = undoMessage,
+            onUndo = {
+                onUndoAlbumAction()
+                showUndoSnackbar = false
+            },
+            onDismiss = { showUndoSnackbar = false },
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
+    }
+
+    // 新建相册对话框
+    if (showCreateAlbumDialog) {
+        AlbumEditDialog(
+            isEdit = false,
+            onConfirm = { name, color, emoji ->
+                onCreateAlbum(name, color, emoji)
+                showCreateAlbumDialog = false
+            },
+            onDismiss = { showCreateAlbumDialog = false }
+        )
     }
 }
 
@@ -229,11 +365,18 @@ private fun DeckContent(
     showHdrBadges: Boolean,
     showMotionBadges: Boolean,
     enableSwipeHaptics: Boolean,
+    albums: List<Album>,
+    currentImageAlbumIds: Set<String>,
     onIndexChange: (Int) -> Unit,
     onRemove: (ImageFile) -> Unit,
     onCardClick: (ImageFile, SourceRect) -> Unit,
     onTrashClick: () -> Unit,
-    onSettingsClick: () -> Unit
+    onSettingsClick: () -> Unit,
+    onAlbumClick: (Album) -> Unit,
+    onAddAlbumClick: () -> Unit,
+    onAlbumsClick: () -> Unit,
+    isAlbumMode: Boolean,
+    onModeChange: (Boolean) -> Unit
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val textColor = if (isDarkTheme) Color.White else TabulaColors.CatBlack
@@ -281,27 +424,56 @@ private fun DeckContent(
             }
         }
 
-        // 底部剩余提示
+        // 底部剩余提示 (上移至标签上方，设计感优化)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 8.dp),
+                .padding(vertical = 8.dp),
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = "还剩 $remaining 张",
-                style = MaterialTheme.typography.bodyMedium,
-                color = textColor.copy(alpha = 0.6f)
+                text = "${remaining} 张待整理",
+                style = MaterialTheme.typography.labelMedium.copy(
+                    letterSpacing = 2.sp, // 增加字间距，增加呼吸感
+                    fontWeight = FontWeight.Medium
+                ),
+                color = textColor.copy(alpha = 0.5f),
+                fontSize = 12.sp
             )
         }
 
-        // 底部指示器
-        BottomIndicator(
-            hasPrev = hasPrev,
-            hasNext = hasNext
-        )
+        // 相册归类 Chips
+        if (albums.isNotEmpty()) {
+            AlbumChips(
+                albums = albums,
+                selectedAlbumIds = currentImageAlbumIds,
+                onAlbumClick = onAlbumClick,
+                onAddAlbumClick = onAddAlbumClick,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp) // 增加底部间距
+            )
+        } else {
+            AlbumChipsEmpty(
+                onAddAlbumClick = onAddAlbumClick,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp)
+            )
+        }
 
-        Spacer(modifier = Modifier.padding(bottom = 8.dp))
+        // 底部模式切换器
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            ModeToggle(
+                isAlbumMode = isAlbumMode,
+                onModeChange = onModeChange
+            )
+        }
     }
 }
 
@@ -377,6 +549,255 @@ private fun EmptyState() {
                 color = textColor.copy(alpha = 0.6f),
                 textAlign = TextAlign.Center
             )
+        }
+    }
+}
+
+/**
+ * 图集模式页面
+ * 
+ * 显示相册网格和底部模式切换器
+ */
+@Composable
+private fun AlbumsGridContent(
+    albums: List<Album>,
+    systemBuckets: List<LocalImageRepository.SystemBucket> = emptyList(),
+    allImages: List<ImageFile>,
+    onCreateAlbum: (String, Long?, String?) -> Unit,
+    onAlbumClick: (Album) -> Unit,
+    onSystemBucketClick: (String) -> Unit = {},
+    isAlbumMode: Boolean,
+    onModeChange: (Boolean) -> Unit,
+    onReorderAlbums: (List<String>) -> Unit = {},
+    onSyncClick: () -> Unit = {},
+    onSettingsClick: () -> Unit = {}
+) {
+    val isDarkTheme = LocalIsDarkTheme.current
+    val context = LocalContext.current
+    val backgroundColor = if (isDarkTheme) Color.Black else Color(0xFFF2F2F7)
+    val textColor = if (isDarkTheme) Color.White else Color(0xFF1C1C1E)
+    val secondaryTextColor = if (isDarkTheme) Color(0xFF8E8E93) else Color(0xFF8E8E93)
+
+    var showCreateDialog by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(backgroundColor)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+    ) {
+        // 标题栏 + 右侧按钮
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "图集",
+                color = textColor,
+                fontSize = 32.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 4.dp)
+            )
+            
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // 同步按钮
+                IconButton(
+                    onClick = {
+                        com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                        onSyncClick()
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Sync,
+                        contentDescription = "同步到相册",
+                        tint = textColor.copy(alpha = 0.7f),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+                
+                // 设置按钮
+                IconButton(
+                    onClick = {
+                        com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                        onSettingsClick()
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Settings,
+                        contentDescription = "设置",
+                        tint = textColor.copy(alpha = 0.7f),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+        }
+
+        // 内容区域 - 使用分类视图
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) {
+            CategorizedAlbumsView(
+                appAlbums = albums,
+                systemBuckets = systemBuckets,
+                allImages = allImages,
+                onAppAlbumClick = onAlbumClick,
+                onSystemBucketClick = onSystemBucketClick,
+                onReorderAlbums = onReorderAlbums,
+                textColor = textColor,
+                secondaryTextColor = secondaryTextColor,
+                isDarkTheme = isDarkTheme
+            )
+        }
+
+        // 底部模式切换器
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            ModeToggle(
+                isAlbumMode = isAlbumMode,
+                onModeChange = onModeChange
+            )
+        }
+    }
+
+    // 创建相册对话框
+    if (showCreateDialog) {
+        AlbumEditDialog(
+            onDismiss = { showCreateDialog = false },
+            onConfirm = { name, color, emoji ->
+                onCreateAlbum(name, color, emoji)
+                showCreateDialog = false
+            }
+        )
+    }
+}
+
+/**
+ * 网格版相册列表
+ */
+@Composable
+private fun AlbumsGrid(
+    albums: List<Album>,
+    allImages: List<ImageFile>,
+    onAlbumClick: (Album) -> Unit,
+    textColor: Color,
+    secondaryTextColor: Color,
+    isDarkTheme: Boolean
+) {
+    val context = LocalContext.current
+    
+    // 建立 ID 到 ImageFile 的映射，加速查找
+    val imageMap = remember(allImages) { allImages.associateBy { it.id } }
+
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
+        contentPadding = PaddingValues(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(24.dp),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        // 提示文字
+        item(span = { GridItemSpan(2) }) {
+            Text(
+                text = "点击查看详情",
+                color = secondaryTextColor,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+        }
+
+        items(albums) { album ->
+            // 尝试获取封面图片
+            val coverImage = album.coverImageId?.let { imageMap[it] }
+            
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .clickable { 
+                        com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                        onAlbumClick(album) 
+                    }
+            ) {
+                // 封面图容器
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f) // 正方形
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(
+                            color = if (isDarkTheme) Color(0xFF1C1C1E) else Color.White
+                        )
+                ) {
+                   if (coverImage != null) {
+                       AsyncImage(
+                           model = ImageRequest.Builder(context)
+                               .data(coverImage.uri)
+                               .crossfade(true)
+                               .build(),
+                           contentDescription = null,
+                           contentScale = ContentScale.Crop,
+                           modifier = Modifier.fillMaxSize()
+                       )
+                   } else {
+                       // 没有图片时的背景色
+                       val albumColor = album.color?.let { Color(it) } ?: Color(0xFF7986CB)
+                       Box(
+                           modifier = Modifier
+                               .fillMaxSize()
+                               .background(albumColor.copy(alpha = 0.2f)),
+                           contentAlignment = Alignment.Center
+                       ) {
+                           if (album.emoji != null) {
+                               Text(
+                                   text = album.emoji,
+                                   fontSize = 32.sp
+                               )
+                           } else {
+                               Box(
+                                   modifier = Modifier
+                                       .size(32.dp)
+                                       .background(albumColor, RoundedCornerShape(8.dp))
+                               )
+                           }
+                       }
+                   }
+                }
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                // 标题
+                Text(
+                    text = album.name,
+                    color = textColor,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1
+                )
+                
+                // 数量
+                Text(
+                    text = "${album.imageCount} 张",
+                    color = secondaryTextColor,
+                    fontSize = 13.sp,
+                )
+            }
+        }
+        
+        // 底部留白，为了不被 toggle 遮挡
+        item(span = { GridItemSpan(2) }) {
+            Spacer(modifier = Modifier.height(80.dp))
         }
     }
 }

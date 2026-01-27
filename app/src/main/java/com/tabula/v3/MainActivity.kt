@@ -56,6 +56,11 @@ import com.tabula.v3.ui.screens.DeckScreen
 import com.tabula.v3.ui.screens.RecycleBinScreen
 import com.tabula.v3.ui.screens.SettingsScreen
 import com.tabula.v3.ui.screens.StatisticsScreen
+import com.tabula.v3.ui.screens.AlbumViewScreen
+import com.tabula.v3.ui.screens.SystemAlbumViewScreen
+import com.tabula.v3.data.repository.AlbumManager
+import com.tabula.v3.data.model.Album
+import androidx.compose.runtime.collectAsState
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.theme.TabulaColors
 import com.tabula.v3.ui.theme.TabulaTheme
@@ -174,23 +179,33 @@ fun TabulaApp(
 
     // ========== 路由状态 ==========
     var currentScreen by remember { mutableStateOf(AppScreen.DECK) }
+    var selectedAlbumId by remember { mutableStateOf<String?>(null) }
+    var selectedBucketName by remember { mutableStateOf<String?>(null) }
+    var isAlbumMode by remember { mutableStateOf(false) }
 
     // ========== 图片数据状态 ==========
     var allImages by remember { mutableStateOf<List<ImageFile>>(emptyList()) }
     var deletedImages by remember { mutableStateOf<List<ImageFile>>(emptyList()) }
+    var systemBuckets by remember { mutableStateOf<List<LocalImageRepository.SystemBucket>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
 
-    // 文件操作管理器
+    // 管理器
     val fileOperationManager = remember { FileOperationManager(context) }
     val recycleBinManager = remember { RecycleBinManager.getInstance(context) }
+    val albumManager = remember { AlbumManager.getInstance(context) }
+    val albums by albumManager.albums.collectAsState()
+    val albumMappings by albumManager.mappings.collectAsState()
 
-    // 加载图片和回收站
+    // 加载数据
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             val repository = LocalImageRepository(context)
             allImages = repository.getAllImages()
-            // 加载持久化的回收站
+            systemBuckets = repository.getAllBucketsWithInfo()
+            
+            // 加载持久化的回收站和相册
             deletedImages = recycleBinManager.loadRecycleBin()
+            albumManager.initialize()
         }
         isLoading = false
     }
@@ -294,11 +309,43 @@ fun TabulaApp(
             onNavigateToSettings = {
                 currentScreen = AppScreen.SETTINGS
             },
+            onNavigateToAlbumDetail = { album ->
+                selectedAlbumId = album.id
+                currentScreen = AppScreen.ALBUM_VIEW
+            },
+            albums = albums,
+            systemBuckets = systemBuckets,
+            onAlbumSelect = { imageId, imageUri, albumId ->
+                 scope.launch {
+                     albumManager.addImageToAlbum(imageId, imageUri, albumId)
+                 }
+            },
+            onCreateAlbum = { name, color, emoji ->
+                scope.launch {
+                    albumManager.createAlbum(name, color, emoji)
+                }
+            },
+            onUndoAlbumAction = {
+                scope.launch {
+                    albumManager.undoLastAction()
+                }
+            },
+            onReorderAlbums = { newOrder ->
+                scope.launch {
+                    albumManager.reorderAlbums(newOrder)
+                }
+            },
+            onSystemBucketClick = { bucketName ->
+                selectedBucketName = bucketName
+                currentScreen = AppScreen.SYSTEM_ALBUM_VIEW
+            },
             showHdrBadges = showHdrBadges,
             showMotionBadges = showMotionBadges,
             playMotionSound = playMotionSound,
             motionSoundVolume = motionSoundVolume,
-            enableSwipeHaptics = swipeHapticsEnabled
+            enableSwipeHaptics = swipeHapticsEnabled,
+            isAlbumMode = isAlbumMode,
+            onModeChange = { isAlbumMode = it }
         )
     }
 
@@ -419,6 +466,56 @@ fun TabulaApp(
         )
     }
 
+    val albumViewContent: @Composable () -> Unit = {
+        AlbumViewScreen(
+            albums = albums,
+            allImages = allImages,
+            getImagesForAlbum = { albumId -> albumManager.getImageIdsForAlbum(albumId) },
+            onCreateAlbum = { name, color, emoji ->
+                scope.launch { albumManager.createAlbum(name, color, emoji) }
+            },
+            onUpdateAlbum = { album ->
+                scope.launch { albumManager.updateAlbum(album) }
+            },
+            onDeleteAlbum = { albumId ->
+                scope.launch { albumManager.deleteAlbum(albumId) }
+            },
+            onToggleSync = { albumId, enabled ->
+                scope.launch { albumManager.toggleSyncEnabled(albumId, enabled) }
+            },
+            onChangeSyncMode = { albumId, mode ->
+                scope.launch { albumManager.changeSyncMode(albumId, mode) }
+            },
+            onNavigateBack = { currentScreen = AppScreen.DECK },
+            initialAlbumId = selectedAlbumId,
+            showHdrBadges = showHdrBadges,
+            showMotionBadges = showMotionBadges,
+            playMotionSound = playMotionSound,
+            motionSoundVolume = motionSoundVolume
+        )
+    }
+
+    val systemAlbumViewContent: @Composable () -> Unit = {
+        var bucketImages by remember(selectedBucketName) { mutableStateOf<List<ImageFile>>(emptyList()) }
+        LaunchedEffect(selectedBucketName) {
+             if (selectedBucketName != null) {
+                 bucketImages = withContext(Dispatchers.IO) {
+                     LocalImageRepository(context).getImagesByBucket(selectedBucketName!!)
+                 }
+             }
+        }
+        
+        SystemAlbumViewScreen(
+            albumName = selectedBucketName ?: "",
+            images = bucketImages,
+            onNavigateBack = { currentScreen = AppScreen.DECK },
+            showHdrBadges = showHdrBadges,
+            showMotionBadges = showMotionBadges,
+            playMotionSound = playMotionSound,
+            motionSoundVolume = motionSoundVolume
+        )
+    }
+
     // 根据当前屏幕决定 前景 和 背景
     val (backgroundContent, foregroundContent) = when (currentScreen) {
         AppScreen.DECK -> deckContent to null
@@ -426,6 +523,8 @@ fun TabulaApp(
         AppScreen.SETTINGS -> deckContent to settingsContent
         AppScreen.ABOUT -> settingsContent to aboutContent
         AppScreen.STATISTICS -> settingsContent to statisticsContent
+        AppScreen.ALBUM_VIEW -> deckContent to albumViewContent
+        AppScreen.SYSTEM_ALBUM_VIEW -> deckContent to systemAlbumViewContent
     }
     
     // 渲染容器
@@ -437,6 +536,8 @@ fun TabulaApp(
                 AppScreen.SETTINGS -> AppScreen.DECK
                 AppScreen.ABOUT -> AppScreen.SETTINGS
                 AppScreen.STATISTICS -> AppScreen.SETTINGS
+                AppScreen.ALBUM_VIEW -> AppScreen.DECK
+                AppScreen.SYSTEM_ALBUM_VIEW -> AppScreen.DECK
                 AppScreen.DECK -> AppScreen.DECK
             }
         },
