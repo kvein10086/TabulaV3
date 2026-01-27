@@ -16,8 +16,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
@@ -34,6 +36,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -52,8 +55,8 @@ import com.tabula.v3.ui.util.HapticFeedback
  */
 @Composable
 fun CategorizedAlbumsView(
-    appAlbums: List<Album>,
-    systemBuckets: List<LocalImageRepository.SystemBucket>,
+    appAlbums: List<Album>?,
+    systemBuckets: List<LocalImageRepository.SystemBucket>?,
     allImages: List<ImageFile>,
     onAppAlbumClick: (Album) -> Unit,
     onSystemBucketClick: (String) -> Unit,
@@ -62,92 +65,101 @@ fun CategorizedAlbumsView(
     secondaryTextColor: Color,
     isDarkTheme: Boolean,
     modifier: Modifier = Modifier,
-    hideHeaders: Boolean = false // 是否隐藏分节标题
+    hideHeaders: Boolean = false, // 是否隐藏分节标题
+    listState: LazyListState = rememberLazyListState(),
+    topPadding: Dp = 100.dp // 顶部内边距
 ) {
     val context = LocalContext.current
     val imageMap = remember(allImages) { allImages.associateBy { it.id } }
 
     LazyColumn(
+        state = listState,
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(vertical = 8.dp)
+        contentPadding = PaddingValues(top = topPadding, bottom = 100.dp)
     ) {
-        // App 图集区域
-        if (!hideHeaders) {
-            item {
-                SectionHeader(
-                    title = "App 图集",
-                    subtitle = "${appAlbums.size} 个",
-                    textColor = textColor,
-                    secondaryTextColor = secondaryTextColor
-                )
+        // App 图集区域 (仅当 appAlbums 不为 null 时显示)
+        if (appAlbums != null) {
+            if (!hideHeaders) {
+                item {
+                    SectionHeader(
+                        title = "App 图集",
+                        subtitle = "${appAlbums.size} 个",
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor
+                    )
+                }
             }
-        }
 
-        if (appAlbums.isEmpty()) {
-            item {
-                EmptyAlbumHint(
-                    text = "还没有创建图集\n在滑一滑界面归类照片即可创建",
-                    textColor = secondaryTextColor
-                )
-            }
-        } else {
-            item {
-                // 横向滚动的App图集卡片
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(appAlbums, key = { it.id }) { album ->
-                        val coverImage = album.coverImageId?.let { imageMap[it] }
-                        AppAlbumCard(
-                            album = album,
-                            coverImage = coverImage,
-                            onClick = { onAppAlbumClick(album) },
-                            textColor = textColor,
-                            secondaryTextColor = secondaryTextColor,
-                            isDarkTheme = isDarkTheme
-                        )
+            if (appAlbums.isEmpty()) {
+                item {
+                    EmptyAlbumHint(
+                        text = "还没有创建图集\n在滑一滑界面归类照片即可创建",
+                        textColor = secondaryTextColor
+                    )
+                }
+            } else {
+                item {
+                    // 横向滚动的App图集卡片
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        items(appAlbums, key = { it.id }) { album ->
+                            val coverImage = album.coverImageId?.let { imageMap[it] }
+                            AppAlbumCard(
+                                album = album,
+                                coverImage = coverImage,
+                                onClick = { onAppAlbumClick(album) },
+                                textColor = textColor,
+                                secondaryTextColor = secondaryTextColor,
+                                isDarkTheme = isDarkTheme
+                            )
+                        }
                     }
+                }
+            }
+
+            // 分隔 (如果下方还有内容)
+            if (systemBuckets != null) {
+                item {
+                    Spacer(modifier = Modifier.height(24.dp))
                 }
             }
         }
 
-        // 分隔
-        item {
-            Spacer(modifier = Modifier.height(24.dp))
-        }
-
-        // 手机相册区域
-        if (!hideHeaders) {
-            item {
-                SectionHeader(
-                    title = "手机相册",
-                    subtitle = "${systemBuckets.size} 个",
-                    textColor = textColor,
-                    secondaryTextColor = secondaryTextColor
-                )
+        // 手机相册区域 (仅当 systemBuckets 不为 null 时显示)
+        if (systemBuckets != null) {
+            if (!hideHeaders) {
+                item {
+                    SectionHeader(
+                        title = "手机相册",
+                        subtitle = "${systemBuckets.size} 个",
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor
+                    )
+                }
             }
-        }
 
-        if (systemBuckets.isEmpty()) {
-            item {
-                EmptyAlbumHint(
-                    text = "没有找到手机相册",
-                    textColor = secondaryTextColor
-                )
-            }
-        } else {
-            items(systemBuckets, key = { it.name }) { bucket ->
-                val coverImage = bucket.coverImageId?.let { imageMap[it] }
-                SystemBucketRow(
-                    bucket = bucket,
-                    coverImage = coverImage,
-                    onClick = { onSystemBucketClick(bucket.name) },
-                    textColor = textColor,
-                    secondaryTextColor = secondaryTextColor,
-                    isDarkTheme = isDarkTheme
-                )
+            if (systemBuckets.isEmpty()) {
+                item {
+                    EmptyAlbumHint(
+                        text = "没有找到手机相册",
+                        textColor = secondaryTextColor
+                    )
+                }
+            } else {
+                items(systemBuckets, key = { it.name }) { bucket ->
+                    val coverImage = bucket.coverImageId?.let { imageMap[it] }
+                    SystemBucketRow(
+                        bucket = bucket,
+                        coverImage = coverImage,
+                        onClick = { onSystemBucketClick(bucket.name) },
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor,
+                        isDarkTheme = isDarkTheme
+                    )
+                }
             }
         }
 

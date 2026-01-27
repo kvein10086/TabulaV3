@@ -2,11 +2,14 @@ package com.tabula.v3.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,6 +48,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -61,6 +66,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.platform.LocalDensity
 import com.tabula.v3.R
 import com.tabula.v3.data.model.Album
 import com.tabula.v3.data.model.ImageFile
@@ -317,22 +324,21 @@ fun DeckScreen(
         }
 
         // 底部模式切换器 (悬浮)
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .background(
-                     // 渐变或者半透明背景，这里使用简单的半透明
-                     Color.Transparent 
+        if (deckState != DeckState.COMPLETED) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(Color.Transparent)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                 ModeToggle(
+                    isAlbumMode = isAlbumMode,
+                    onModeChange = onModeChange
                 )
-                .navigationBarsPadding()
-                .padding(bottom = 24.dp),
-            contentAlignment = Alignment.Center
-        ) {
-             ModeToggle(
-                isAlbumMode = isAlbumMode,
-                onModeChange = onModeChange
-            )
+            }
         }
 
         // 查看器覆盖层
@@ -588,164 +594,213 @@ private fun AlbumsGridContent(
     // 0 = App相册, 1 = 手机相册
     var selectedTab by remember { mutableIntStateOf(0) }
 
-    Column(
+    // 列表滚动状态
+    val listState = rememberLazyListState()
+    
+    // 动画阈值 (dp)
+    val collapseThreshold = 40.dp
+    val density = LocalDensity.current
+    val collapseThresholdPx = with(density) { collapseThreshold.toPx() }
+    
+    // 计算滚动引起的透明度变化
+    val scrollOffset by remember {
+        derivedStateOf {
+            if (listState.firstVisibleItemIndex > 0) {
+                collapseThresholdPx // 只要第一项不可见，就视为完全折叠
+            } else {
+                listState.firstVisibleItemScrollOffset.toFloat().coerceAtMost(collapseThresholdPx)
+            }
+        }
+    }
+    
+    val collapsedFraction by remember {
+        derivedStateOf { scrollOffset / collapseThresholdPx }
+    }
+    
+    // 顶部栏背景：从透明 -> 模糊毛玻璃
+    // 当滚动发生时，背景逐渐变得不透明
+    val topBarBackgroundColor by animateColorAsState(
+        targetValue = if (collapsedFraction > 0.5f) {
+            if (isDarkTheme) Color(0xFF1C1C1E).copy(alpha = 0.95f) else Color(0xFFF2F2F7).copy(alpha = 0.95f)
+        } else {
+            Color.Transparent
+        },
+        label = "TopBarBackground"
+    )
+    
+    val topBarBorderColor = if (collapsedFraction > 0.5f) {
+        if (isDarkTheme) Color.White.copy(alpha = 0.1f) else Color.Black.copy(alpha = 0.05f) // 细微分割线
+    } else {
+        Color.Transparent
+    }
+    
+    // 计算内容区域的顶部 Padding
+    // 基础高度 (大标题) + Tab栏高度 (如果显示)
+    val contentTopPadding = if (isTabbedView) 160.dp else 110.dp
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(backgroundColor)
-            .statusBarsPadding()
-            // 移出 navigationBarsPadding 以实现穿透效果，手动在底部留白
     ) {
-        // 标题栏 + 右侧按钮
-        Row(
+        // 1. 内容区域 (底层)
+        CategorizedAlbumsView(
+            appAlbums = if (isTabbedView && selectedTab == 1) null else albums,
+            systemBuckets = if (isTabbedView && selectedTab == 0) null else systemBuckets,
+            allImages = allImages,
+            onAppAlbumClick = onAlbumClick,
+            onSystemBucketClick = onSystemBucketClick,
+            onReorderAlbums = onReorderAlbums,
+            textColor = textColor,
+            secondaryTextColor = secondaryTextColor,
+            isDarkTheme = isDarkTheme,
+            hideHeaders = isTabbedView,
+            listState = listState,
+            topPadding = contentTopPadding
+        )
+
+        // 2. 顶部栏 (固定，大标题 + 可选Tab)
+        Column(
             modifier = Modifier
+                .align(Alignment.TopCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .background(topBarBackgroundColor)
+                .border(
+                    width = if (collapsedFraction > 0.5f) 0.5.dp else 0.dp, 
+                    color = topBarBorderColor
+                )
+                .statusBarsPadding()
+                .padding(bottom = 12.dp) // 底部稍微留白
         ) {
-             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            // 第一行：大标题 + 右侧按钮
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp, start = 20.dp, end = 16.dp)
             ) {
+                // 大标题 (左侧)
                 Text(
                     text = "图集",
                     color = textColor,
                     fontSize = 32.sp,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(start = 4.dp)
+                    modifier = Modifier.align(Alignment.CenterStart)
                 )
+                
+                // 右侧按钮组
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // 视图切换按钮
+                    IconButton(
+                        onClick = {
+                            com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                            isTabbedView = !isTabbedView
+                        }
+                    ) {
+                        Icon(
+                            imageVector = if (isTabbedView) Icons.Rounded.ViewModule else Icons.Rounded.ViewList,
+                            contentDescription = "切换视图",
+                            tint = textColor,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                    
+                    // 同步按钮
+                    IconButton(
+                        onClick = {
+                            com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                            onSyncClick()
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Sync,
+                            contentDescription = "同步到相册",
+                            tint = textColor,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                    
+                    // 设置按钮
+                    IconButton(
+                        onClick = {
+                            com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                            onSettingsClick()
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Settings,
+                            contentDescription = "设置",
+                            tint = textColor,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
             }
             
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                // 视图切换按钮
-                IconButton(
-                    onClick = {
-                        com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                        isTabbedView = !isTabbedView
-                    }
-                ) {
-                    Icon(
-                        imageVector = if (isTabbedView) Icons.Rounded.ViewModule else Icons.Rounded.ViewList,
-                        contentDescription = "切换视图",
-                        tint = textColor.copy(alpha = 0.7f),
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-                
-                // 同步按钮
-                IconButton(
-                    onClick = {
-                        com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                        onSyncClick()
-                    }
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Sync,
-                        contentDescription = "同步到相册",
-                        tint = textColor.copy(alpha = 0.7f),
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-                
-                // 设置按钮
-                IconButton(
-                    onClick = {
-                        com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                        onSettingsClick()
-                    }
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Settings,
-                        contentDescription = "设置",
-                        tint = textColor.copy(alpha = 0.7f),
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-            }
-        }
-
-        // Tab栏 (仅在 Tab模式下显示)
-        if (isTabbedView) {
-             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                 Box(
+            // 第二行：Tab栏 (仅在 Tab模式下显示)
+            if (isTabbedView) {
+                 Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(100))
-                        .background(if (isDarkTheme) Color(0xFF2C2C2E) else Color(0xFFE5E5EA))
-                        .padding(2.dp)
+                        .fillMaxWidth()
+                        .padding(top = 16.dp),
+                    horizontalArrangement = Arrangement.Center
                 ) {
-                     Row {
-                         // Tab 1: App相册
-                         Box(
-                            modifier = Modifier
-                                .width(100.dp)
-                                .clip(RoundedCornerShape(100))
-                                .background(if (selectedTab == 0) (if (isDarkTheme) Color(0xFF636366) else Color.White) else Color.Transparent)
-                                .clickable { 
-                                     com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                                     selectedTab = 0 
-                                }
-                                .padding(vertical = 6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                             Text(
-                                text = "App图集",
-                                fontSize = 14.sp,
-                                fontWeight = if (selectedTab == 0) FontWeight.SemiBold else FontWeight.Medium,
-                                color = textColor
-                            )
-                        }
-                        
-                        // Tab 2: 手机相册
-                         Box(
-                            modifier = Modifier
-                                .width(100.dp)
-                                .clip(RoundedCornerShape(100))
-                                .background(if (selectedTab == 1) (if (isDarkTheme) Color(0xFF636366) else Color.White) else Color.Transparent)
-                                .clickable { 
-                                     com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                                     selectedTab = 1
-                                }
-                                .padding(vertical = 6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                             Text(
-                                text = "手机相册",
-                                fontSize = 14.sp,
-                                fontWeight = if (selectedTab == 1) FontWeight.SemiBold else FontWeight.Medium,
-                                color = textColor
-                            )
-                        }
-                     }
+                     Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(100))
+                            .background(if (isDarkTheme) Color(0xFF2C2C2E) else Color(0xFFE5E5EA))
+                            .padding(2.dp)
+                    ) {
+                         Row {
+                             // Tab 1: App相册
+                             Box(
+                                modifier = Modifier
+                                    .width(100.dp)
+                                    .clip(RoundedCornerShape(100))
+                                    .background(if (selectedTab == 0) (if (isDarkTheme) Color(0xFF636366) else Color.White) else Color.Transparent)
+                                    .clickable { 
+                                         com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                                         selectedTab = 0 
+                                    }
+                                    .padding(vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                 Text(
+                                    text = "App图集",
+                                    fontSize = 14.sp,
+                                    fontWeight = if (selectedTab == 0) FontWeight.SemiBold else FontWeight.Medium,
+                                    color = textColor
+                                )
+                            }
+                            
+                            // Tab 2: 手机相册
+                             Box(
+                                modifier = Modifier
+                                    .width(100.dp)
+                                    .clip(RoundedCornerShape(100))
+                                    .background(if (selectedTab == 1) (if (isDarkTheme) Color(0xFF636366) else Color.White) else Color.Transparent)
+                                    .clickable { 
+                                         com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                                         selectedTab = 1
+                                    }
+                                    .padding(vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                 Text(
+                                    text = "手机相册",
+                                    fontSize = 14.sp,
+                                    fontWeight = if (selectedTab == 1) FontWeight.SemiBold else FontWeight.Medium,
+                                    color = textColor
+                                )
+                            }
+                         }
+                    }
                 }
             }
-        }
-
-        // 内容区域
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-        ) {
-            CategorizedAlbumsView(
-                appAlbums = if (isTabbedView && selectedTab == 1) emptyList() else albums,
-                systemBuckets = if (isTabbedView && selectedTab == 0) emptyList() else systemBuckets,
-                allImages = allImages,
-                onAppAlbumClick = onAlbumClick,
-                onSystemBucketClick = onSystemBucketClick,
-                onReorderAlbums = onReorderAlbums,
-                textColor = textColor,
-                secondaryTextColor = secondaryTextColor,
-                isDarkTheme = isDarkTheme,
-                // 根据是否Tab view 隐藏 Header
-                hideHeaders = isTabbedView
-            )
         }
     }
 

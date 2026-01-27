@@ -4,7 +4,9 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -42,17 +44,36 @@ fun ModeToggle(
     val context = LocalContext.current
     val isDarkTheme = LocalIsDarkTheme.current
     
-    // 颜色
+    // 容器背景色：浅色模式下使用纯白半透明，深色模式下使用深灰半透明
+    // 避免使用与页面背景相同的灰色 (F2F2F7)，否则会"隐身"
     val containerColor = if (isDarkTheme) {
-        Color(0xFF2C2C2E).copy(alpha = 0.9f)
+        Color(0xFF252525).copy(alpha = 0.85f)
     } else {
-        Color(0xFFE5E5EA).copy(alpha = 0.9f)
+        Color.White.copy(alpha = 0.85f)
     }
     
-    val selectedBgColor = if (isDarkTheme) {
-        Color(0xFF636366) // Slightly lighter in dark mode for contrast
+    // 边框：垂直渐变，模拟顶部高光反射
+    val borderBrush = if (isDarkTheme) {
+        androidx.compose.ui.graphics.Brush.verticalGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.15f), // 顶部亮
+                Color.White.copy(alpha = 0.05f)  // 底部暗
+            )
+        )
     } else {
-        Color.White
+        androidx.compose.ui.graphics.Brush.verticalGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.8f),
+                Color.White.copy(alpha = 0.2f)
+            )
+        )
+    }
+
+    // 滑块颜色
+    val selectedBgColor = if (isDarkTheme) {
+        Color(0xFF636366) 
+    } else {
+        Color(0xFFF2F2F7) // 浅灰，与白色背景形成微弱对比
     }
     
     val textColor = if (isDarkTheme) Color.White else Color.Black
@@ -74,9 +95,22 @@ fun ModeToggle(
 
     Box(
         modifier = modifier
+            // 投影：更柔和、更扩散的阴影
+            .shadow(
+                elevation = 12.dp,
+                shape = RoundedCornerShape(100),
+                spotColor = Color.Black.copy(alpha = 0.15f),
+                ambientColor = Color.Black.copy(alpha = 0.1f)
+            )
+            // 边框
+            .border(
+                width = 1.dp,
+                brush = borderBrush,
+                shape = RoundedCornerShape(100)
+            )
             .clip(RoundedCornerShape(100))
             .background(containerColor)
-            .padding(2.dp), // Thinner padding
+            .padding(4.dp), 
         contentAlignment = Alignment.CenterStart
     ) {
         // 滑动选中背景
@@ -84,9 +118,14 @@ fun ModeToggle(
             modifier = Modifier
                 .offset(x = offsetX)
                 .width(segmentWidth)
+                .shadow(
+                    elevation = 2.dp,
+                    shape = RoundedCornerShape(100),
+                    spotColor = Color.Black.copy(alpha = 0.1f)
+                )
                 .clip(RoundedCornerShape(100))
                 .background(selectedBgColor)
-                .padding(vertical = 8.dp) // Height control
+                .padding(vertical = 8.dp)
         ) {
              Text(text = " ", fontSize = fontSize) // Placeholder
         }
