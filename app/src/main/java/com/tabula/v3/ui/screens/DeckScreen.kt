@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -32,6 +33,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.ViewList
+import androidx.compose.material.icons.rounded.ViewModule
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -219,7 +222,8 @@ fun DeckScreen(
             transitionSpec = {
                 fadeIn() togetherWith fadeOut()
             },
-            label = "deck_state"
+            label = "deck_state",
+            modifier = Modifier.fillMaxSize()
         ) { state ->
             when (state) {
                 "loading" -> LoadingState()
@@ -241,8 +245,6 @@ fun DeckScreen(
                         onCreateAlbum = onCreateAlbum,
                         onAlbumClick = onNavigateToAlbumDetail,
                         onSystemBucketClick = onSystemBucketClick,
-                        isAlbumMode = isAlbumMode,
-                        onModeChange = onModeChange,
                         onReorderAlbums = onReorderAlbums,
                         onSyncClick = onSyncClick,
                         onSettingsClick = onNavigateToSettings
@@ -308,15 +310,33 @@ fun DeckScreen(
                             }
                         },
                         onAddAlbumClick = { showCreateAlbumDialog = true },
-                        onAlbumsClick = onNavigateToAlbums,
-                        isAlbumMode = isAlbumMode,
-                        onModeChange = onModeChange
+                        onAlbumsClick = onNavigateToAlbums
                     )
                 }
             }
         }
 
+        // 底部模式切换器 (悬浮)
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(
+                     // 渐变或者半透明背景，这里使用简单的半透明
+                     Color.Transparent 
+                )
+                .navigationBarsPadding()
+                .padding(bottom = 24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+             ModeToggle(
+                isAlbumMode = isAlbumMode,
+                onModeChange = onModeChange
+            )
+        }
+
         // 查看器覆盖层
+
         viewerState?.let { state ->
             ViewerOverlay(
                 viewerState = state,
@@ -374,9 +394,7 @@ private fun DeckContent(
     onSettingsClick: () -> Unit,
     onAlbumClick: (Album) -> Unit,
     onAddAlbumClick: () -> Unit,
-    onAlbumsClick: () -> Unit,
-    isAlbumMode: Boolean,
-    onModeChange: (Boolean) -> Unit
+    onAlbumsClick: () -> Unit
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val textColor = if (isDarkTheme) Color.White else TabulaColors.CatBlack
@@ -451,27 +469,14 @@ private fun DeckContent(
                 onAddAlbumClick = onAddAlbumClick,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 24.dp) // 增加底部间距
+                    .padding(bottom = 80.dp) // 增加底部间距，避免遮挡
             )
         } else {
             AlbumChipsEmpty(
                 onAddAlbumClick = onAddAlbumClick,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 24.dp)
-            )
-        }
-
-        // 底部模式切换器
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 24.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            ModeToggle(
-                isAlbumMode = isAlbumMode,
-                onModeChange = onModeChange
+                    .padding(bottom = 80.dp)
             )
         }
     }
@@ -566,8 +571,6 @@ private fun AlbumsGridContent(
     onCreateAlbum: (String, Long?, String?) -> Unit,
     onAlbumClick: (Album) -> Unit,
     onSystemBucketClick: (String) -> Unit = {},
-    isAlbumMode: Boolean,
-    onModeChange: (Boolean) -> Unit,
     onReorderAlbums: (List<String>) -> Unit = {},
     onSyncClick: () -> Unit = {},
     onSettingsClick: () -> Unit = {}
@@ -579,13 +582,18 @@ private fun AlbumsGridContent(
     val secondaryTextColor = if (isDarkTheme) Color(0xFF8E8E93) else Color(0xFF8E8E93)
 
     var showCreateDialog by remember { mutableStateOf(false) }
+    
+    // 视图模式：True = 分类Tab模式, False = 融合模式(默认)
+    var isTabbedView by remember { mutableStateOf(false) }
+    // 0 = App相册, 1 = 手机相册
+    var selectedTab by remember { mutableIntStateOf(0) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(backgroundColor)
             .statusBarsPadding()
-            .navigationBarsPadding()
+            // 移出 navigationBarsPadding 以实现穿透效果，手动在底部留白
     ) {
         // 标题栏 + 右侧按钮
         Row(
@@ -595,17 +603,37 @@ private fun AlbumsGridContent(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "图集",
-                color = textColor,
-                fontSize = 32.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(start = 4.dp)
-            )
+             Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = "图集",
+                    color = textColor,
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = 4.dp)
+                )
+            }
             
             Row(
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                // 视图切换按钮
+                IconButton(
+                    onClick = {
+                        com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                        isTabbedView = !isTabbedView
+                    }
+                ) {
+                    Icon(
+                        imageVector = if (isTabbedView) Icons.Rounded.ViewModule else Icons.Rounded.ViewList,
+                        contentDescription = "切换视图",
+                        tint = textColor.copy(alpha = 0.7f),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+                
                 // 同步按钮
                 IconButton(
                     onClick = {
@@ -638,35 +666,85 @@ private fun AlbumsGridContent(
             }
         }
 
-        // 内容区域 - 使用分类视图
+        // Tab栏 (仅在 Tab模式下显示)
+        if (isTabbedView) {
+             Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.Center
+            ) {
+                 Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(100))
+                        .background(if (isDarkTheme) Color(0xFF2C2C2E) else Color(0xFFE5E5EA))
+                        .padding(2.dp)
+                ) {
+                     Row {
+                         // Tab 1: App相册
+                         Box(
+                            modifier = Modifier
+                                .width(100.dp)
+                                .clip(RoundedCornerShape(100))
+                                .background(if (selectedTab == 0) (if (isDarkTheme) Color(0xFF636366) else Color.White) else Color.Transparent)
+                                .clickable { 
+                                     com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                                     selectedTab = 0 
+                                }
+                                .padding(vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                             Text(
+                                text = "App图集",
+                                fontSize = 14.sp,
+                                fontWeight = if (selectedTab == 0) FontWeight.SemiBold else FontWeight.Medium,
+                                color = textColor
+                            )
+                        }
+                        
+                        // Tab 2: 手机相册
+                         Box(
+                            modifier = Modifier
+                                .width(100.dp)
+                                .clip(RoundedCornerShape(100))
+                                .background(if (selectedTab == 1) (if (isDarkTheme) Color(0xFF636366) else Color.White) else Color.Transparent)
+                                .clickable { 
+                                     com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                                     selectedTab = 1
+                                }
+                                .padding(vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                             Text(
+                                text = "手机相册",
+                                fontSize = 14.sp,
+                                fontWeight = if (selectedTab == 1) FontWeight.SemiBold else FontWeight.Medium,
+                                color = textColor
+                            )
+                        }
+                     }
+                }
+            }
+        }
+
+        // 内容区域
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
         ) {
             CategorizedAlbumsView(
-                appAlbums = albums,
-                systemBuckets = systemBuckets,
+                appAlbums = if (isTabbedView && selectedTab == 1) emptyList() else albums,
+                systemBuckets = if (isTabbedView && selectedTab == 0) emptyList() else systemBuckets,
                 allImages = allImages,
                 onAppAlbumClick = onAlbumClick,
                 onSystemBucketClick = onSystemBucketClick,
                 onReorderAlbums = onReorderAlbums,
                 textColor = textColor,
                 secondaryTextColor = secondaryTextColor,
-                isDarkTheme = isDarkTheme
-            )
-        }
-
-        // 底部模式切换器
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            ModeToggle(
-                isAlbumMode = isAlbumMode,
-                onModeChange = onModeChange
+                isDarkTheme = isDarkTheme,
+                // 根据是否Tab view 隐藏 Header
+                hideHeaders = isTabbedView
             )
         }
     }

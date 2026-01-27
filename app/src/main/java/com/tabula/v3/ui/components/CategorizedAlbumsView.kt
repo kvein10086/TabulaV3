@@ -61,7 +61,8 @@ fun CategorizedAlbumsView(
     textColor: Color,
     secondaryTextColor: Color,
     isDarkTheme: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    hideHeaders: Boolean = false // 是否隐藏分节标题
 ) {
     val context = LocalContext.current
     val imageMap = remember(allImages) { allImages.associateBy { it.id } }
@@ -71,13 +72,15 @@ fun CategorizedAlbumsView(
         contentPadding = PaddingValues(vertical = 8.dp)
     ) {
         // App 图集区域
-        item {
-            SectionHeader(
-                title = "App 图集",
-                subtitle = "${appAlbums.size} 个",
-                textColor = textColor,
-                secondaryTextColor = secondaryTextColor
-            )
+        if (!hideHeaders) {
+            item {
+                SectionHeader(
+                    title = "App 图集",
+                    subtitle = "${appAlbums.size} 个",
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor
+                )
+            }
         }
 
         if (appAlbums.isEmpty()) {
@@ -116,13 +119,15 @@ fun CategorizedAlbumsView(
         }
 
         // 手机相册区域
-        item {
-            SectionHeader(
-                title = "手机相册",
-                subtitle = "${systemBuckets.size} 个",
-                textColor = textColor,
-                secondaryTextColor = secondaryTextColor
-            )
+        if (!hideHeaders) {
+            item {
+                SectionHeader(
+                    title = "手机相册",
+                    subtitle = "${systemBuckets.size} 个",
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor
+                )
+            }
         }
 
         if (systemBuckets.isEmpty()) {
