@@ -30,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +52,7 @@ import com.tabula.v3.data.preferences.TopBarDisplayMode
 import com.tabula.v3.data.repository.FileOperationManager
 import com.tabula.v3.data.repository.LocalImageRepository
 import com.tabula.v3.data.repository.RecycleBinManager
+import com.tabula.v3.data.repository.RecommendationEngine
 import com.tabula.v3.ui.navigation.AppScreen
 import com.tabula.v3.ui.navigation.PredictiveBackContainer
 import com.tabula.v3.ui.screens.AboutScreen
@@ -66,6 +68,7 @@ import androidx.compose.runtime.collectAsState
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.theme.TabulaColors
 import com.tabula.v3.ui.theme.TabulaTheme
+import android.widget.Toast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -204,20 +207,31 @@ fun TabulaApp(
     val fileOperationManager = remember { FileOperationManager(context) }
     val recycleBinManager = remember { RecycleBinManager.getInstance(context) }
     val albumManager = remember { AlbumManager.getInstance(context) }
+    val recommendationEngine = remember { RecommendationEngine.getInstance(context) }
     val albums by albumManager.albums.collectAsState()
     val albumMappings by albumManager.mappings.collectAsState()
 
+    // ========== 同步状态 ==========
+    var isSyncing by remember { mutableStateOf(false) }
+
+    // ========== 推荐模式刷新触发器 ==========
+    // 用于在设置中切换推荐模式后，返回主页时刷新批次
+    var recommendModeRefreshKey by remember { mutableIntStateOf(0) }
+
     // 加载数据
     LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
+        val loadedData = withContext(Dispatchers.IO) {
             val repository = LocalImageRepository(context)
-            allImages = repository.getAllImages()
-            systemBuckets = repository.getAllBucketsWithInfo()
-            
-            // 加载持久化的回收站和相册
-            deletedImages = recycleBinManager.loadRecycleBin()
+            val images = repository.getAllImages()
+            val buckets = repository.getAllBucketsWithInfo()
+            val deleted = recycleBinManager.loadRecycleBin()
             albumManager.initialize()
+            Triple(images, buckets, deleted)
         }
+        // 在主线程更新状态
+        allImages = loadedData.first
+        systemBuckets = loadedData.second
+        deletedImages = loadedData.third
         isLoading = false
     }
 
@@ -350,6 +364,48 @@ fun TabulaApp(
                 selectedBucketName = bucketName
                 currentScreen = AppScreen.SYSTEM_ALBUM_VIEW
             },
+            // 推荐算法回调 - 使用 RecommendationEngine
+            getRecommendedBatch = { images, size ->
+                recommendationEngine.getRecommendedBatch(images, size)
+            },
+            // 同步按钮回调
+            onSyncClick = {
+                if (!isSyncing) {
+                    isSyncing = true
+                    Toast.makeText(context, "正在同步图集到系统相册...", Toast.LENGTH_SHORT).show()
+                    scope.launch {
+                        try {
+                            val result = albumManager.syncAllEnabledAlbumsToSystem()
+                            withContext(Dispatchers.Main) {
+                                val message = when {
+                                    result.totalAlbums == 0 -> "没有启用同步的图集\n请在图集设置中开启同步"
+                                    result.syncedImages == 0 && result.successCount > 0 -> "所有 ${result.totalAlbums} 个图集已是最新"
+                                    result.successCount == result.totalAlbums -> 
+                                        "同步完成！\n${result.totalAlbums} 个图集，共 ${result.syncedImages} 张图片"
+                                    else -> 
+                                        "同步完成\n成功 ${result.successCount}/${result.totalAlbums} 个图集"
+                                }
+                                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                                
+                                // 刷新系统相册列表
+                                val repository = LocalImageRepository(context)
+                                systemBuckets = withContext(Dispatchers.IO) {
+                                    repository.getAllBucketsWithInfo()
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e("TabulaApp", "Sync failed", e)
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "同步失败: ${e.message}", Toast.LENGTH_LONG).show()
+                            }
+                        } finally {
+                            isSyncing = false
+                        }
+                    }
+                } else {
+                    Toast.makeText(context, "同步进行中，请稍候...", Toast.LENGTH_SHORT).show()
+                }
+            },
             showHdrBadges = showHdrBadges,
             showMotionBadges = showMotionBadges,
             playMotionSound = playMotionSound,
@@ -457,7 +513,11 @@ fun TabulaApp(
             },
             onNavigateToAbout = { currentScreen = AppScreen.ABOUT },
             onNavigateBack = { currentScreen = AppScreen.DECK },
-            onNavigateToStatistics = { currentScreen = AppScreen.STATISTICS }
+            onNavigateToStatistics = { currentScreen = AppScreen.STATISTICS },
+            onRecommendModeChange = { 
+                // 切换推荐模式后，增加刷新触发器以刷新批次
+                recommendModeRefreshKey++
+            }
         )
     }
 

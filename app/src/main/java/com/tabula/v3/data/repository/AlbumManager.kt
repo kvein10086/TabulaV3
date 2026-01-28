@@ -414,6 +414,94 @@ class AlbumManager(private val context: Context) {
     }
 
     /**
+     * 同步结果数据类
+     */
+    data class SyncResult(
+        val successCount: Int,
+        val totalAlbums: Int,
+        val syncedImages: Int,
+        val albumResults: List<AlbumSyncResult>
+    )
+
+    data class AlbumSyncResult(
+        val albumName: String,
+        val imagesSynced: Int,
+        val success: Boolean
+    )
+
+    /**
+     * 同步所有启用同步的图集到系统相册
+     * @param onProgress 进度回调，参数为 (当前图集索引, 总图集数, 当前图集已同步图片数, 当前图集总图片数)
+     * @return 同步结果
+     */
+    suspend fun syncAllEnabledAlbumsToSystem(
+        onProgress: ((albumIndex: Int, totalAlbums: Int, currentImages: Int, totalImages: Int) -> Unit)? = null
+    ): SyncResult = withContext(Dispatchers.IO) {
+        val allAlbums = loadAlbums()
+        val enabledAlbums = allAlbums.filter { it.isSyncEnabled }
+        
+        if (enabledAlbums.isEmpty()) {
+            Log.d(TAG, "No albums enabled for sync")
+            return@withContext SyncResult(0, 0, 0, emptyList())
+        }
+
+        Log.d(TAG, "Starting sync for ${enabledAlbums.size} albums")
+        
+        val albumResults = mutableListOf<AlbumSyncResult>()
+        var totalSyncedImages = 0
+        var successCount = 0
+
+        enabledAlbums.forEachIndexed { index, album ->
+            try {
+                val imageIds = getImageIdsForAlbum(album.id)
+                val mappings = loadMappings()
+                val imageUris = imageIds.mapNotNull { imageId ->
+                    mappings.find { it.imageId == imageId }?.imageUri?.let { Uri.parse(it) }
+                }
+
+                if (imageUris.isEmpty()) {
+                    Log.d(TAG, "Album '${album.name}' has no images to sync")
+                    albumResults.add(AlbumSyncResult(album.name, 0, true))
+                    successCount++
+                    onProgress?.invoke(index + 1, enabledAlbums.size, 0, 0)
+                    return@forEachIndexed
+                }
+
+                // 确保系统相册文件夹存在
+                if (album.systemAlbumPath.isNullOrBlank()) {
+                    val systemPath = syncManager.createSystemAlbum(album.name)
+                    if (systemPath != null) {
+                        val updatedAlbum = album.copy(systemAlbumPath = systemPath)
+                        updateAlbum(updatedAlbum)
+                    }
+                }
+
+                Log.d(TAG, "Syncing album '${album.name}' with ${imageUris.size} images")
+                
+                val syncedCount = syncManager.syncAlbumToSystem(
+                    album.name, 
+                    imageUris, 
+                    album.syncMode
+                ) { current, total ->
+                    onProgress?.invoke(index + 1, enabledAlbums.size, current, total)
+                }
+                
+                totalSyncedImages += syncedCount
+                albumResults.add(AlbumSyncResult(album.name, syncedCount, true))
+                successCount++
+                
+                Log.d(TAG, "Successfully synced ${syncedCount} images to album '${album.name}'")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to sync album '${album.name}'", e)
+                albumResults.add(AlbumSyncResult(album.name, 0, false))
+            }
+        }
+
+        Log.d(TAG, "Sync completed: $successCount/${enabledAlbums.size} albums, $totalSyncedImages images")
+        SyncResult(successCount, enabledAlbums.size, totalSyncedImages, albumResults)
+    }
+
+    /**
      * 将单张图片同步到系统相册（当开启同步时）
      */
     private suspend fun syncImageToSystemIfEnabled(imageUri: String, albumId: String) {

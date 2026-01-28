@@ -182,18 +182,31 @@ fun DeckScreen(
 
     // 异步初始化批次
     androidx.compose.runtime.LaunchedEffect(allImages, isLoading, needsInitialBatch) {
+        android.util.Log.d("DeckScreen", "LaunchedEffect: allImages.size=${allImages.size}, isLoading=$isLoading, needsInitialBatch=$needsInitialBatch, currentBatch.isEmpty=${currentBatch.isEmpty()}")
         if (currentBatch.isEmpty() && allImages.isNotEmpty() && !isLoading && needsInitialBatch) {
-            needsInitialBatch = false
-            val newBatch = getRecommendedBatch(allImages, batchSize)
-            
-            if (newBatch.isNotEmpty()) {
-                currentBatch = newBatch
-                currentIndex = 0
-                markedCount = 0
-                deckState = DeckState.BROWSING
-            } else {
-                // 如果推荐结果为空（例如都在冷却中），直接显示完成状态
-                deckState = DeckState.COMPLETED
+            android.util.Log.d("DeckScreen", "Starting batch fetch...")
+            try {
+                val newBatch = getRecommendedBatch(allImages, batchSize)
+                android.util.Log.d("DeckScreen", "Got batch: size=${newBatch.size}")
+                
+                // 只有成功获取后才设置 needsInitialBatch = false
+                needsInitialBatch = false
+                
+                if (newBatch.isNotEmpty()) {
+                    currentBatch = newBatch
+                    currentIndex = 0
+                    markedCount = 0
+                    deckState = DeckState.BROWSING
+                } else {
+                    // 如果推荐结果为空（例如都在冷却中），直接显示完成状态
+                    deckState = DeckState.COMPLETED
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 协程被取消（例如组件重新创建），不做处理，让下次LaunchedEffect重试
+                android.util.Log.d("DeckScreen", "Batch fetch cancelled, will retry")
+            } catch (e: Exception) {
+                android.util.Log.e("DeckScreen", "Error fetching batch", e)
+                needsInitialBatch = false  // 出错时也设置，避免无限重试
             }
         }
     }
@@ -279,9 +292,7 @@ fun DeckScreen(
                         onIndexChange = { newIndex ->
                             // 如果向后滑超过最后一张，进入完成页面
                             if (newIndex >= currentBatch.size) {
-                                if (enableSwipeHaptics) {
-                                    HapticFeedback.doubleTap(context)
-                                }
+                                // 不额外触发振动，CardStack 滑动时已触发过
                                 deckState = DeckState.COMPLETED
                             } else {
                                 if (newIndex > currentIndex) {

@@ -226,6 +226,47 @@ class AppPreferences(context: Context) {
         editor.apply()
     }
 
+    /**
+     * 批量获取当前在冷却期内的图片ID集合
+     * 一次性读取所有记录，避免多次单独读取 SharedPreferences
+     */
+    fun getCooldownImageIds(): Set<Long> {
+        val now = System.currentTimeMillis()
+        val cooldownIds = mutableSetOf<Long>()
+        
+        pickTimestampsPrefs.all.forEach { (key, value) ->
+            if (key.startsWith("time_") && value is Long) {
+                val imageIdStr = key.removePrefix("time_")
+                val imageId = imageIdStr.toLongOrNull() ?: return@forEach
+                val cooldownDays = pickTimestampsPrefs.getInt("days_$imageIdStr", cooldownOptions.first())
+                val cooldownMillis = cooldownDays.toLong() * 24 * 60 * 60 * 1000
+                
+                if (now - value < cooldownMillis) {
+                    cooldownIds.add(imageId)
+                }
+            }
+        }
+        
+        return cooldownIds
+    }
+
+    /**
+     * 批量记录照片被抽取的时间
+     */
+    fun recordImagesPicked(imageIds: List<Long>) {
+        if (imageIds.isEmpty()) return
+        val editor = pickTimestampsPrefs.edit()
+        val now = System.currentTimeMillis()
+        
+        imageIds.forEach { imageId ->
+            val randomCooldownDays = cooldownOptions.random()
+            editor.putLong("time_$imageId", now)
+            editor.putInt("days_$imageId", randomCooldownDays)
+        }
+        
+        editor.apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "tabula_prefs"
         private const val KEY_SORT_ORDER = "sort_order"

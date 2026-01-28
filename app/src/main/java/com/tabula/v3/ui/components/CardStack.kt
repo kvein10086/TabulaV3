@@ -186,23 +186,38 @@ fun SwipeableCardStack(
         val isLastCard = direction > 0 && currentIndex >= images.lastIndex
 
         if (isLastCard) {
-            // 滑动到完成页面：使用平滑淡出，不要回弹
-            val targetX = -screenWidthPx * 0.4f
-            val targetRotation = -12f
+            // 滑动到完成页面：使用平滑的淡出效果，无需显示斜着的卡片
+            // 继续跟随手指拖动的方向，但更平滑
+            val currentX = dragOffsetX.value
+            val targetX = if (currentX < 0) -screenWidthPx * 0.3f else screenWidthPx * 0.3f
             
-            // 使用更长的动画时间和淡出效果
-            scope.launch { dragOffsetX.animateTo(targetX, tween(200)) }
-            scope.launch { dragOffsetY.animateTo(-50f, tween(200)) }
-            scope.launch { dragRotation.animateTo(targetRotation, tween(200)) }
-            scope.launch { dragAlpha.animateTo(0.3f, tween(200)) }
-            scope.launch { dragScale.animateTo(0.9f, tween(200)) }
-
-            kotlinx.coroutines.delay(150)
+            // 更短、更平滑的过渡动画
+            scope.launch { 
+                dragOffsetX.animateTo(
+                    targetX, 
+                    tween(150, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                ) 
+            }
+            scope.launch { 
+                dragAlpha.animateTo(
+                    0f, 
+                    tween(150, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                ) 
+            }
+            scope.launch { 
+                dragScale.animateTo(
+                    0.95f, 
+                    tween(150, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                ) 
+            }
+            // 保持当前旋转，不额外旋转
+            
+            kotlinx.coroutines.delay(100)
 
             // 通知进入完成页面
             onIndexChange(currentIndex + 1)
 
-            // 重置状态（不需要回弹，因为页面会切换）
+            // 重置状态
             dragOffsetX.snapTo(0f)
             dragOffsetY.snapTo(0f)
             dragRotation.snapTo(0f)

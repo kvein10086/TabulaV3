@@ -114,7 +114,8 @@ fun SettingsScreen(
     onNavigateToAbout: () -> Unit,
     onNavigateBack: () -> Unit,
     onNavigateToStatistics: () -> Unit = {},
-    onNavigateToAlbums: () -> Unit = {}
+    onNavigateToAlbums: () -> Unit = {},
+    onRecommendModeChange: () -> Unit = {}  // 推荐模式变更后通知主页刷新
 ) {
     val context = LocalContext.current
     val isDarkTheme = LocalIsDarkTheme.current
@@ -594,6 +595,7 @@ fun SettingsScreen(
                 ) {
                     currentRecommendMode = RecommendMode.RANDOM_WALK
                     preferences.recommendMode = RecommendMode.RANDOM_WALK
+                    onRecommendModeChange()  // 通知主页刷新
                     showRecommendModeSheet = false
                 }
                 OptionItem(
@@ -605,6 +607,7 @@ fun SettingsScreen(
                 ) {
                     currentRecommendMode = RecommendMode.SIMILAR
                     preferences.recommendMode = RecommendMode.SIMILAR
+                    onRecommendModeChange()  // 通知主页刷新
                     showRecommendModeSheet = false
                 }
             }

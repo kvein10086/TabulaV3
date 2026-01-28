@@ -32,7 +32,7 @@ class RecommendationEngine(
         allImages: List<ImageFile>,
         batchSize: Int,
         anchorImage: ImageFile? = null
-    ): List<ImageFile> = withContext(Dispatchers.Default) {
+    ): List<ImageFile> = withContext(Dispatchers.IO) {
         if (allImages.isEmpty()) return@withContext emptyList()
         
         // 清理过期的抽取记录
@@ -54,9 +54,12 @@ class RecommendationEngine(
         allImages: List<ImageFile>,
         batchSize: Int
     ): List<ImageFile> {
+        // 一次性获取所有冷却中的图片ID（优化：避免为每张图片单独查询）
+        val cooldownIds = preferences.getCooldownImageIds()
+        
         // 分离可用照片和冷却中的照片
         val (cooldownImages, availableImages) = allImages.partition { 
-            preferences.isImageInCooldown(it.id) 
+            it.id in cooldownIds
         }
         
         val result = mutableListOf<ImageFile>()
@@ -73,8 +76,8 @@ class RecommendationEngine(
             result.addAll(sortedCooldown.take(batchSize - result.size))
         }
         
-        // 记录这批照片被抽取
-        result.forEach { preferences.recordImagePicked(it.id) }
+        // 批量记录这批照片被抽取（优化：使用批量写入）
+        preferences.recordImagesPicked(result.map { it.id })
         
         return result
     }
@@ -87,40 +90,54 @@ class RecommendationEngine(
      * 2. 文件大小相近（相似照片通常大小相近）
      * 3. 尺寸相同（相同场景拍摄的照片尺寸通常相同）
      * 4. 来自同一相册
+     * 
+     * 优先返回相似度最高的图片，确保用户看到的确实是相似的照片
      */
     private suspend fun getSimilarBatch(
         allImages: List<ImageFile>,
         batchSize: Int,
         anchorImage: ImageFile?
     ): List<ImageFile> {
-        // 如果没有锚点图片，随机选择一个
-        val anchor = anchorImage ?: allImages.randomOrNull() ?: return emptyList()
+        if (allImages.isEmpty()) return emptyList()
         
-        // 计算每张照片与锚点的相似度分数
-        val scoredImages = allImages
+        // 相似度阈值 - 低于此分数认为不相似
+        val similarityThreshold = 30f
+        
+        // 如果没有锚点图片，随机选择一个作为起点
+        // 优先从最近拍摄的照片中选择（更可能有连拍和相似照片）
+        val anchor = anchorImage ?: run {
+            // 按时间排序，从最近的 100 张照片中随机选择一个
+            val recentImages = allImages.sortedByDescending { it.dateModified }.take(100)
+            recentImages.randomOrNull() ?: allImages.randomOrNull() ?: return emptyList()
+        }
+        // 为了性能，只对时间上接近锚点的图片计算相似度
+        // 先按时间排序，找到锚点位置，然后取前后各 500 张
+        val sortedByTime = allImages.sortedBy { it.dateModified }
+        val anchorIndex = sortedByTime.indexOfFirst { it.id == anchor.id }
+        val startIndex = maxOf(0, anchorIndex - 500)
+        val endIndex = minOf(sortedByTime.size, anchorIndex + 500)
+        val candidateImages = sortedByTime.subList(startIndex, endIndex)
             .filter { it.id != anchor.id }
+        
+        // 计算候选照片与锚点的相似度分数
+        val scoredImages = candidateImages
             .map { image ->
                 val score = calculateSimilarityScore(anchor, image)
                 image to score
             }
             .sortedByDescending { it.second }
         
-        // 取分数最高的照片，但要加入一些随机性避免总是相同的结果
         val result = mutableListOf(anchor)
         
-        // 高相似度照片（前50%）
-        val highSimilarity = scoredImages.take(scoredImages.size / 2)
-        // 中等相似度照片（后50%）  
-        val mediumSimilarity = scoredImages.drop(scoredImages.size / 2)
+        // 首先添加高相似度的图片（分数 >= 阈值）
+        val highSimilarityImages = scoredImages.filter { it.second >= similarityThreshold }
         
-        // 70%概率从高相似度中选，30%从中等相似度中选
-        val targetFromHigh = ((batchSize - 1) * 0.7).toInt()
-        val targetFromMedium = batchSize - 1 - targetFromHigh
+        // 直接按相似度顺序添加（最相似的排在前面）
+        highSimilarityImages.take(batchSize - 1).forEach { (image, _) ->
+            result.add(image)
+        }
         
-        result.addAll(highSimilarity.shuffled().take(targetFromHigh).map { it.first })
-        result.addAll(mediumSimilarity.shuffled().take(targetFromMedium).map { it.first })
-        
-        // 如果结果不够，补充剩余的
+        // 如果高相似度图片不够，从剩余图片中补充
         if (result.size < batchSize) {
             val remaining = scoredImages
                 .map { it.first }
