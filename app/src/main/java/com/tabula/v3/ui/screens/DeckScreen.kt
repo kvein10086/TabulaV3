@@ -74,6 +74,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tabula.v3.ui.components.TagPosition
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.platform.LocalDensity
 import com.tabula.v3.R
@@ -183,6 +184,9 @@ fun DeckScreen(
     var showCreateAlbumDialog by remember { mutableStateOf(false) }
     var showUndoSnackbar by remember { mutableStateOf(false) }
     var undoMessage by remember { mutableStateOf("") }
+    
+    // 下滑归类模式状态（用于隐藏底部切换按钮）
+    var isClassifyMode by remember { mutableStateOf(false) }
 
     // 用于异步初始化批次
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -354,16 +358,44 @@ fun DeckScreen(
                         onAddAlbumClick = { showCreateAlbumDialog = true },
                         onAlbumsClick = onNavigateToAlbums,
                         isAlbumMode = isAlbumMode,
-                        onModeChange = onModeChange
+                        onModeChange = onModeChange,
+                        // 下滑归类专用回调：使用回调传入的 image 而不是 currentImage
+                        // 因为 Genie 动画的 onComplete 是异步的，currentImage 可能已经变化
+                        onSwipeClassifyToAlbum = { image, album ->
+                            onAlbumSelect(image.id, image.uri.toString(), album.id)
+                            undoMessage = "已添加到「${album.name}」"
+                            showUndoSnackbar = true
+                            
+                            // 从当前批次中移除已归类的图片
+                            // 因为 Genie 动画已经播放了图片"飞走"的效果，用户预期图片已被处理
+                            val newBatch = currentBatch.toMutableList().apply { remove(image) }
+                            currentBatch = newBatch
+                            
+                            if (newBatch.isEmpty()) {
+                                // 如果没有剩余图片，进入完成页面
+                                if (enableSwipeHaptics) {
+                                    HapticFeedback.doubleTap(context)
+                                }
+                                deckState = DeckState.COMPLETED
+                            } else if (currentIndex >= newBatch.size) {
+                                // 如果当前索引超出范围，调整到最后一张
+                                currentIndex = newBatch.lastIndex
+                            }
+                            // 不需要增加 currentIndex，因为图片已被移除，原来的下一张会自动变成当前位置的图片
+                        },
+                        // 下滑归类模式状态回调
+                        onClassifyModeChange = { mode ->
+                            isClassifyMode = mode
+                        }
                     )
                 }
             }
         }
 
-        // 底部模式切换器 (悬浮) - 在所有模式下都显示
+        // 底部模式切换器 (悬浮) - 在所有模式下都显示，但下滑归类时隐藏
         // 移到顶层，确保在图片模式和图集模式下都可见
         androidx.compose.animation.AnimatedVisibility(
-            visible = !isLoading && allImages.isNotEmpty(),
+            visible = !isLoading && allImages.isNotEmpty() && !isClassifyMode,
             enter = androidx.compose.animation.fadeIn(),
             exit = androidx.compose.animation.fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter)
@@ -444,7 +476,11 @@ private fun DeckContent(
     onAddAlbumClick: () -> Unit,
     onAlbumsClick: () -> Unit,
     isAlbumMode: Boolean = false,
-    onModeChange: (Boolean) -> Unit = {}
+    onModeChange: (Boolean) -> Unit = {},
+    // 下滑归类专用回调（携带图片信息，避免异步回调时 currentImage 变化的问题）
+    onSwipeClassifyToAlbum: (ImageFile, Album) -> Unit = { _, album -> onAlbumClick(album) },
+    // 下滑归类模式状态回调
+    onClassifyModeChange: (Boolean) -> Unit = {}
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val textColor = if (isDarkTheme) Color.White else TabulaColors.CatBlack
@@ -456,10 +492,14 @@ private fun DeckContent(
     
     // 下滑归类模式状态
     var isClassifyMode by remember { mutableStateOf(false) }
-    var selectedAlbumIndex by remember { mutableIntStateOf(0) }
+    // 默认选中第一个相册（索引1），因为索引0是新建按钮
+    var selectedAlbumIndex by remember(albums) { mutableIntStateOf(if (albums.isNotEmpty()) 1 else 0) }
     
-    // 标签位置映射（索引 -> 屏幕坐标）
-    var tagPositions by remember { mutableStateOf<Map<Int, androidx.compose.ui.geometry.Rect>>(emptyMap()) }
+    // 标签位置映射（索引 -> TagPosition）
+    var tagPositions by remember { mutableStateOf<Map<Int, TagPosition>>(emptyMap()) }
+    
+    // 回收站按钮位置（用于上滑删除的 Genie 动画目标点）
+    var trashButtonBounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
 
     Box(
         modifier = Modifier
@@ -477,7 +517,10 @@ private fun DeckContent(
                 currentImage = currentImage,
                 displayMode = topBarDisplayMode,
                 onTrashClick = onTrashClick,
-                onSettingsClick = onSettingsClick
+                onSettingsClick = onSettingsClick,
+                onTrashButtonBoundsChanged = { bounds ->
+                    trashButtonBounds = bounds
+                }
             )
 
             // 卡片堆叠区域
@@ -501,8 +544,8 @@ private fun DeckContent(
                         // 下滑归类相关参数
                         albums = albums,
                         onClassifyToAlbum = { image, album ->
-                            // 将图片添加到图集
-                            onAlbumClick(album)
+                            // 将图片添加到图集（使用新的下滑归类回调）
+                            onSwipeClassifyToAlbum(image, album)
                         },
                         onCreateNewAlbum = { image ->
                             // 打开新建图集对话框
@@ -510,16 +553,19 @@ private fun DeckContent(
                         },
                         onClassifyModeChange = { mode ->
                             isClassifyMode = mode
+                            onClassifyModeChange(mode)  // 同步到外部
                             if (mode) {
-                                // 进入归类模式时，默认选中第一个标签
-                                selectedAlbumIndex = 0
+                                // 进入归类模式时，默认选中第一个标签（新建后面的）
+                                selectedAlbumIndex = if (albums.isNotEmpty()) 1 else 0
                             }
                         },
                         onSelectedIndexChange = { index ->
                             selectedAlbumIndex = index
                         },
                         // 传递标签位置
-                        tagPositions = tagPositions
+                        tagPositions = tagPositions,
+                        // 传递回收站按钮位置（用于上滑删除的 Genie 动画）
+                        trashButtonBounds = trashButtonBounds
                     )
                 }
             }
@@ -601,10 +647,10 @@ private fun DeckContent(
                         AlbumDropTarget(
                             albums = albums,
                             selectedIndex = selectedAlbumIndex,
-                        onTagPositionChanged = { index, bounds ->
-                            // 更新标签位置映射
-                            tagPositions = tagPositions + (index to bounds)
-                        },
+                            onTagPositionChanged = { index, tagPosition ->
+                                // 更新标签位置映射
+                                tagPositions = tagPositions + (index to tagPosition)
+                            },
                             modifier = Modifier.fillMaxWidth()
                         )
                     }

@@ -23,8 +23,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -49,6 +52,7 @@ import java.util.Locale
  * @param displayMode 显示模式（索引或时间）
  * @param onTrashClick 回收站按钮点击
  * @param onSettingsClick 设置按钮点击
+ * @param onTrashButtonBoundsChanged 回收站按钮位置变化回调（用于Genie动画目标点）
  * @param modifier 外部修饰符
  */
 @Composable
@@ -59,6 +63,7 @@ fun TopBar(
     displayMode: TopBarDisplayMode = TopBarDisplayMode.INDEX,
     onTrashClick: () -> Unit,
     onSettingsClick: () -> Unit,
+    onTrashButtonBoundsChanged: ((Rect) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -116,7 +121,14 @@ fun TopBar(
                     onTrashClick()
                 },
                 backgroundColor = buttonBgColor,
-                iconColor = buttonIconColor
+                iconColor = buttonIconColor,
+                modifier = if (onTrashButtonBoundsChanged != null) {
+                    Modifier.onGloballyPositioned { coordinates ->
+                        onTrashButtonBoundsChanged(coordinates.boundsInRoot())
+                    }
+                } else {
+                    Modifier
+                }
             )
 
             Spacer(modifier = Modifier.width(8.dp))

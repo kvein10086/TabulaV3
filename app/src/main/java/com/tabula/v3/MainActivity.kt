@@ -60,6 +60,9 @@ import com.tabula.v3.ui.screens.AboutScreen
 import com.tabula.v3.ui.screens.DeckScreen
 import com.tabula.v3.ui.screens.RecycleBinScreen
 import com.tabula.v3.ui.screens.SettingsScreen
+import com.tabula.v3.ui.screens.VibrationSoundScreen
+import com.tabula.v3.ui.screens.LabScreen
+import com.tabula.v3.ui.screens.ImageDisplayScreen
 import com.tabula.v3.ui.screens.StatisticsScreen
 import com.tabula.v3.ui.screens.AlbumViewScreen
 import com.tabula.v3.ui.screens.SystemAlbumViewScreen
@@ -68,6 +71,7 @@ import com.tabula.v3.data.model.Album
 import androidx.compose.runtime.collectAsState
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.theme.TabulaColors
+import com.tabula.v3.ui.util.HapticFeedback
 import com.tabula.v3.ui.theme.TabulaTheme
 import com.tabula.v3.service.FluidCloudService
 import android.widget.Toast
@@ -564,7 +568,87 @@ fun TabulaApp(
             onFluidCloudEnabledChange = { enabled ->
                 fluidCloudEnabled = enabled
                 preferences.fluidCloudEnabled = enabled
-            }
+            },
+            onNavigateToVibrationSound = { currentScreen = AppScreen.VIBRATION_SOUND },
+            onNavigateToImageDisplay = { currentScreen = AppScreen.IMAGE_DISPLAY },
+            onNavigateToLab = { currentScreen = AppScreen.LAB }
+        )
+    }
+
+    val vibrationSoundContent: @Composable () -> Unit = {
+        val isDark = LocalIsDarkTheme.current
+        VibrationSoundScreen(
+            backgroundColor = if (isDark) Color.Black else Color(0xFFF2F2F7),
+            cardColor = if (isDark) Color(0xFF1C1C1E) else Color.White,
+            textColor = if (isDark) Color.White else Color.Black,
+            secondaryTextColor = Color(0xFF8E8E93),
+            accentColor = TabulaColors.EyeGold,
+            showMotionBadges = showMotionBadges,
+            playMotionSound = playMotionSound,
+            motionSoundVolume = motionSoundVolume,
+            hapticEnabled = hapticEnabled,
+            hapticStrength = hapticStrength,
+            swipeHapticsEnabled = swipeHapticsEnabled,
+            onPlayMotionSoundChange = { enabled ->
+                playMotionSound = enabled
+                preferences.playMotionSound = enabled
+            },
+            onMotionSoundVolumeChange = { volume ->
+                motionSoundVolume = volume
+                preferences.motionSoundVolume = volume
+            },
+            onHapticEnabledChange = { enabled ->
+                hapticEnabled = enabled
+                preferences.hapticEnabled = enabled
+                HapticFeedback.updateSettings(enabled, hapticStrength)
+            },
+            onHapticStrengthChange = { strength ->
+                hapticStrength = strength
+                preferences.hapticStrength = strength
+                HapticFeedback.updateSettings(hapticEnabled, strength)
+            },
+            onSwipeHapticsEnabledChange = { enabled ->
+                swipeHapticsEnabled = enabled
+                preferences.swipeHapticsEnabled = enabled
+            },
+            onNavigateBack = { currentScreen = AppScreen.SETTINGS }
+        )
+    }
+
+    val labContent: @Composable () -> Unit = {
+        val isDark = LocalIsDarkTheme.current
+        LabScreen(
+            backgroundColor = if (isDark) Color.Black else Color(0xFFF2F2F7),
+            cardColor = if (isDark) Color(0xFF1C1C1E) else Color.White,
+            textColor = if (isDark) Color.White else Color.Black,
+            secondaryTextColor = Color(0xFF8E8E93),
+            fluidCloudEnabled = fluidCloudEnabled,
+            onFluidCloudEnabledChange = { enabled ->
+                fluidCloudEnabled = enabled
+                preferences.fluidCloudEnabled = enabled
+            },
+            onNavigateBack = { currentScreen = AppScreen.SETTINGS }
+        )
+    }
+
+    val imageDisplayContent: @Composable () -> Unit = {
+        val isDark = LocalIsDarkTheme.current
+        ImageDisplayScreen(
+            backgroundColor = if (isDark) Color.Black else Color(0xFFF2F2F7),
+            cardColor = if (isDark) Color(0xFF1C1C1E) else Color.White,
+            textColor = if (isDark) Color.White else Color.Black,
+            secondaryTextColor = Color(0xFF8E8E93),
+            showHdrBadges = showHdrBadges,
+            showMotionBadges = showMotionBadges,
+            onShowHdrBadgesChange = { enabled ->
+                showHdrBadges = enabled
+                preferences.showHdrBadges = enabled
+            },
+            onShowMotionBadgesChange = { enabled ->
+                showMotionBadges = enabled
+                preferences.showMotionBadges = enabled
+            },
+            onNavigateBack = { currentScreen = AppScreen.SETTINGS }
         )
     }
 
@@ -575,11 +659,17 @@ fun TabulaApp(
     }
 
     val statisticsContent: @Composable () -> Unit = {
+        // 计算剩余整理数量：还没有被推荐刷到的图片
+        val cooldownIds = preferences.getCooldownImageIds()
+        val seenCount = allImages.count { it.id in cooldownIds }
+        val remainingToOrganize = allImages.size - seenCount
+        
         StatisticsScreen(
             reviewedCount = preferences.totalReviewedCount.toInt(),
             totalImages = allImages.size + preferences.totalReviewedCount.toInt(),
             deletedCount = preferences.totalDeletedCount.toInt(),
             markedCount = deletedImages.size,
+            remainingCount = remainingToOrganize,
             onBack = { currentScreen = AppScreen.SETTINGS }
         )
     }
@@ -643,6 +733,9 @@ fun TabulaApp(
         AppScreen.STATISTICS -> settingsContent to statisticsContent
         AppScreen.ALBUM_VIEW -> deckContent to albumViewContent
         AppScreen.SYSTEM_ALBUM_VIEW -> deckContent to systemAlbumViewContent
+        AppScreen.VIBRATION_SOUND -> settingsContent to vibrationSoundContent
+        AppScreen.IMAGE_DISPLAY -> settingsContent to imageDisplayContent
+        AppScreen.LAB -> settingsContent to labContent
     }
     
     // 渲染容器
@@ -656,6 +749,9 @@ fun TabulaApp(
                 AppScreen.STATISTICS -> AppScreen.SETTINGS
                 AppScreen.ALBUM_VIEW -> AppScreen.DECK
                 AppScreen.SYSTEM_ALBUM_VIEW -> AppScreen.DECK
+                AppScreen.VIBRATION_SOUND -> AppScreen.SETTINGS
+                AppScreen.IMAGE_DISPLAY -> AppScreen.SETTINGS
+                AppScreen.LAB -> AppScreen.SETTINGS
                 AppScreen.DECK -> AppScreen.DECK
             }
         },

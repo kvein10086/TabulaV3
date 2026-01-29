@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -16,7 +17,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
+import coil.size.Size
 import com.tabula.v3.data.model.ImageFile
 import com.tabula.v3.di.CoilSetup
 
@@ -24,6 +27,11 @@ import com.tabula.v3.di.CoilSetup
  * 图片卡片组件 - Crop 填充模式
  *
  * 图片完全填充卡片，不留黑边
+ * 
+ * 性能优化：
+ * - 使用固定的目标尺寸 (1080px)，避免加载原始 4K/HDR 图片
+ * - 使用稳定的缓存键，防止重复加载
+ * - 禁用不必要的重组触发
  *
  * @param imageFile 要显示的图片
  * @param modifier 外部修饰符
@@ -41,6 +49,13 @@ fun ImageCard(
     val context = LocalContext.current
     val imageLoader = CoilSetup.getImageLoader(context)
     val shape = RoundedCornerShape(cornerRadius)
+    
+    // 使用固定尺寸，避免因尺寸变化导致的重复加载
+    // 1080px 对于大部分手机屏幕足够清晰，同时避免加载过大的图片
+    val targetSize = remember { Size(1080, 1440) }
+    
+    // 使用稳定的缓存键，基于图片 ID
+    val cacheKey = remember(imageFile.id) { "card_${imageFile.id}" }
 
     Box(
         modifier = modifier
@@ -59,6 +74,11 @@ fun ImageCard(
         AsyncImage(
             model = ImageRequest.Builder(context)
                 .data(imageFile.uri)
+                .size(targetSize)  // 固定尺寸，避免加载原始大图
+                .memoryCacheKey(cacheKey)  // 稳定的缓存键
+                .diskCacheKey(cacheKey)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
                 .crossfade(150)
                 .build(),
             contentDescription = imageFile.displayName,

@@ -43,6 +43,15 @@ import androidx.compose.material.icons.outlined.TextFormat
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.Vibration
 import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.Science
+import androidx.compose.material.icons.outlined.Widgets
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
+import android.content.Intent
+import android.os.Build
+import android.util.Log
+import android.widget.Toast
+import com.tabula.v3.widget.TabulaWidgetProvider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -118,7 +127,10 @@ fun SettingsScreen(
     onNavigateToAlbums: () -> Unit = {},
     onRecommendModeChange: () -> Unit = {},  // 推荐模式变更后通知主页刷新
     fluidCloudEnabled: Boolean = false,
-    onFluidCloudEnabledChange: (Boolean) -> Unit = {}
+    onFluidCloudEnabledChange: (Boolean) -> Unit = {},
+    onNavigateToVibrationSound: () -> Unit = {},
+    onNavigateToImageDisplay: () -> Unit = {},
+    onNavigateToLab: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val isDarkTheme = LocalIsDarkTheme.current
@@ -151,62 +163,9 @@ fun SettingsScreen(
     var showThemeSheet by remember { mutableStateOf(false) }
     var showBatchSizeSheet by remember { mutableStateOf(false) }
     var showTopBarModeSheet by remember { mutableStateOf(false) }
-    var showVibrationSoundPage by remember { mutableStateOf(false) }
     var showRecommendModeSheet by remember { mutableStateOf(false) }
 
-    BackHandler(enabled = showVibrationSoundPage) {
-        HapticFeedback.lightTap(context)
-        showVibrationSoundPage = false
-    }
-
-    if (showVibrationSoundPage) {
-        VibrationSoundScreen(
-            backgroundColor = backgroundColor,
-            cardColor = cardColor,
-            textColor = textColor,
-            secondaryTextColor = secondaryTextColor,
-            accentColor = accentColor,
-            showMotionBadges = currentShowMotionBadges,
-            playMotionSound = currentPlayMotionSound,
-            motionSoundVolume = currentMotionSoundVolume,
-            hapticEnabled = currentHapticEnabled,
-            hapticStrength = currentHapticStrength,
-            swipeHapticsEnabled = currentSwipeHapticsEnabled,
-            onPlayMotionSoundChange = {
-                HapticFeedback.lightTap(context)
-                currentPlayMotionSound = it
-                onPlayMotionSoundChange(it)
-            },
-            onMotionSoundVolumeChange = {
-                currentMotionSoundVolume = it
-                onMotionSoundVolumeChange(it)
-            },
-            onHapticEnabledChange = {
-                HapticFeedback.lightTap(context)
-                currentHapticEnabled = it
-                HapticFeedback.updateSettings(
-                    enabled = it,
-                    strength = currentHapticStrength
-                )
-                onHapticEnabledChange(it)
-            },
-            onHapticStrengthChange = {
-                currentHapticStrength = it
-                HapticFeedback.updateSettings(
-                    enabled = currentHapticEnabled,
-                    strength = it
-                )
-                onHapticStrengthChange(it)
-            },
-            onSwipeHapticsEnabledChange = {
-                HapticFeedback.lightTap(context)
-                currentSwipeHapticsEnabled = it
-                onSwipeHapticsEnabledChange(it)
-            },
-            onNavigateBack = { showVibrationSoundPage = false }
-        )
-    } else {
-        Column(
+    Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(backgroundColor)
@@ -346,33 +305,19 @@ fun SettingsScreen(
                         preferences.showDeleteConfirm = it
                     }
                 )
+                
                 Divider(isDarkTheme)
 
-                SettingsSwitchItem(
+                SettingsItem(
                     icon = Icons.Outlined.Image,
                     iconTint = Color(0xFF0A84FF), // Blue
-                    title = "显示 HDR 标识",
+                    title = "图片显示",
+                    value = "",
                     textColor = textColor,
-                    checked = currentShowHdrBadges,
-                    onCheckedChange = {
+                    secondaryTextColor = secondaryTextColor,
+                    onClick = {
                         HapticFeedback.lightTap(context)
-                        currentShowHdrBadges = it
-                        onShowHdrBadgesChange(it)
-                    }
-                )
-
-                Divider(isDarkTheme)
-
-                SettingsSwitchItem(
-                    icon = Icons.Outlined.Movie,
-                    iconTint = Color(0xFF30D158), // Green
-                    title = "显示 Live 照片",
-                    textColor = textColor,
-                    checked = currentShowMotionBadges,
-                    onCheckedChange = {
-                        HapticFeedback.lightTap(context)
-                        currentShowMotionBadges = it
-                        onShowMotionBadgesChange(it)
+                        onNavigateToImageDisplay()
                     }
                 )
 
@@ -387,43 +332,29 @@ fun SettingsScreen(
                     secondaryTextColor = secondaryTextColor,
                     onClick = {
                         HapticFeedback.lightTap(context)
-                        showVibrationSoundPage = true
+                        onNavigateToVibrationSound()
                     }
                 )
             }
 
             Spacer(modifier = Modifier.height(28.dp))
             
-            // ========== 进阶功能 ==========
-            SectionHeader("进阶功能", textColor)
+            // ========== 实验室 ==========
+            SectionHeader("实验室", textColor)
             
             SettingsGroup(cardColor) {
-                SettingsSwitchItem(
-                    icon = Icons.Outlined.Cloud,
-                    iconTint = Color(0xFF5E5CE6), // Indigo
-                    title = "流体云",
+                SettingsItem(
+                    icon = Icons.Outlined.Science,
+                    iconTint = Color(0xFFBF5AF2), // Purple
+                    title = "实验室",
+                    value = "",
                     textColor = textColor,
-                    checked = currentFluidCloudEnabled,
-                    onCheckedChange = { enabled ->
+                    secondaryTextColor = secondaryTextColor,
+                    onClick = {
                         HapticFeedback.lightTap(context)
-                        currentFluidCloudEnabled = enabled
-                        onFluidCloudEnabledChange(enabled)
+                        onNavigateToLab()
                     }
                 )
-                
-                // 流体云说明
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                        .padding(bottom = 12.dp)
-                ) {
-                    Text(
-                        text = "退出应用时在流体云/状态栏显示剩余照片数量，支持 ColorOS 流体云",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = secondaryTextColor.copy(alpha = 0.7f)
-                    )
-                }
             }
 
             Spacer(modifier = Modifier.height(28.dp))
@@ -535,10 +466,7 @@ fun SettingsScreen(
         }
     }
 
-    }
-
-    if (!showVibrationSoundPage) {
-        // ========== 各种底栏 (Modals) ==========
+    // ========== 各种底栏 (Modals) ==========
         
         // 主题选择
         if (showThemeSheet) {
@@ -650,11 +578,10 @@ fun SettingsScreen(
                 }
             }
         }
-    }
 }
 
 @Composable
-private fun VibrationSoundScreen(
+fun VibrationSoundScreen(
     backgroundColor: Color,
     cardColor: Color,
     textColor: Color,
@@ -793,6 +720,638 @@ private fun VibrationSoundScreen(
             Spacer(modifier = Modifier.height(28.dp))
         }
     }
+}
+
+@Composable
+fun ImageDisplayScreen(
+    backgroundColor: Color,
+    cardColor: Color,
+    textColor: Color,
+    secondaryTextColor: Color,
+    showHdrBadges: Boolean,
+    showMotionBadges: Boolean,
+    onShowHdrBadgesChange: (Boolean) -> Unit,
+    onShowMotionBadgesChange: (Boolean) -> Unit,
+    onNavigateBack: () -> Unit
+) {
+    val context = LocalContext.current
+    
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(backgroundColor)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+    ) {
+        // 顶部栏
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            IconButton(
+                onClick = {
+                    HapticFeedback.lightTap(context)
+                    onNavigateBack()
+                },
+                modifier = Modifier.align(Alignment.CenterStart)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = "返回",
+                    tint = textColor,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            Text(
+                text = "图片显示",
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
+                ),
+                color = textColor,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+        ) {
+            Spacer(modifier = Modifier.height(12.dp))
+
+            SectionHeader("标识显示", textColor)
+            SettingsGroup(cardColor) {
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.Image,
+                    iconTint = Color(0xFF0A84FF), // Blue
+                    title = "显示 HDR 标识",
+                    textColor = textColor,
+                    checked = showHdrBadges,
+                    onCheckedChange = {
+                        HapticFeedback.lightTap(context)
+                        onShowHdrBadgesChange(it)
+                    }
+                )
+
+                Divider(LocalIsDarkTheme.current)
+
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.Movie,
+                    iconTint = Color(0xFF30D158), // Green
+                    title = "显示 Live 照片",
+                    textColor = textColor,
+                    checked = showMotionBadges,
+                    onCheckedChange = {
+                        HapticFeedback.lightTap(context)
+                        onShowMotionBadgesChange(it)
+                    }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(28.dp))
+        }
+    }
+}
+
+@Composable
+fun LabScreen(
+    backgroundColor: Color,
+    cardColor: Color,
+    textColor: Color,
+    secondaryTextColor: Color,
+    fluidCloudEnabled: Boolean,
+    onFluidCloudEnabledChange: (Boolean) -> Unit,
+    onNavigateBack: () -> Unit
+) {
+    val context = LocalContext.current
+    val isDarkTheme = LocalIsDarkTheme.current
+    val accentColor = TabulaColors.EyeGold
+    
+    // 小组件引导对话框状态
+    var showWidgetGuideSheet by remember { mutableStateOf(false) }
+    
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(backgroundColor)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+    ) {
+        // 顶部栏
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            IconButton(
+                onClick = {
+                    HapticFeedback.lightTap(context)
+                    onNavigateBack()
+                },
+                modifier = Modifier.align(Alignment.CenterStart)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = "返回",
+                    tint = textColor,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            Text(
+                text = "实验室",
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
+                ),
+                color = textColor,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+        ) {
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            // 实验室说明
+            Text(
+                text = "这里是一些实验性功能，可能不稳定或在未来版本中更改。",
+                style = MaterialTheme.typography.bodySmall,
+                color = secondaryTextColor.copy(alpha = 0.7f),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            SectionHeader("流体云", textColor)
+            SettingsGroup(cardColor) {
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.Cloud,
+                    iconTint = Color(0xFF5E5CE6), // Indigo
+                    title = "启用流体云",
+                    textColor = textColor,
+                    checked = fluidCloudEnabled,
+                    onCheckedChange = onFluidCloudEnabledChange
+                )
+                
+                // 流体云说明
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 12.dp)
+                ) {
+                    Text(
+                        text = "退出应用时在流体云/状态栏显示剩余照片数量，支持 ColorOS 流体云",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor.copy(alpha = 0.7f)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(28.dp))
+
+            // ========== 桌面小组件 ==========
+            SectionHeader("桌面小组件", textColor)
+            SettingsGroup(cardColor) {
+                // 检测小组件是否已添加
+                val appWidgetManager = AppWidgetManager.getInstance(context)
+                val widgetComponent = ComponentName(context, TabulaWidgetProvider::class.java)
+                val widgetIds = appWidgetManager.getAppWidgetIds(widgetComponent)
+                val isWidgetAdded = widgetIds.isNotEmpty()
+                
+                SettingsItem(
+                    icon = Icons.Outlined.Widgets,
+                    iconTint = Color(0xFF30D158), // Green
+                    title = "添加桌面小组件",
+                    value = if (isWidgetAdded) "已添加 (${widgetIds.size})" else "去添加",
+                    textColor = textColor,
+                    secondaryTextColor = if (isWidgetAdded) Color(0xFF30D158) else secondaryTextColor,
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        if (isWidgetAdded) {
+                            Toast.makeText(context, "小组件已添加到桌面", Toast.LENGTH_SHORT).show()
+                        } else {
+                            // 显示引导对话框
+                            showWidgetGuideSheet = true
+                        }
+                    }
+                )
+                
+                // 小组件说明
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 12.dp)
+                ) {
+                    Text(
+                        text = "在桌面添加小组件，快速查看待整理照片数量",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor.copy(alpha = 0.7f)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(28.dp))
+        }
+    }
+    
+    // 小组件添加引导对话框
+    if (showWidgetGuideSheet) {
+        WidgetGuideBottomSheet(
+            onDismiss = { showWidgetGuideSheet = false },
+            containerColor = cardColor,
+            textColor = textColor,
+            secondaryTextColor = secondaryTextColor,
+            accentColor = accentColor
+        )
+    }
+}
+
+/**
+ * 小组件添加引导底部弹窗
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WidgetGuideBottomSheet(
+    onDismiss: () -> Unit,
+    containerColor: Color,
+    textColor: Color,
+    secondaryTextColor: Color,
+    accentColor: Color
+) {
+    val context = LocalContext.current
+    val isColorOSDevice = isColorOS()
+    
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = containerColor,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 32.dp)
+        ) {
+            // 标题
+            Text(
+                text = "添加桌面小组件",
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = FontWeight.Bold
+                ),
+                color = textColor,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+            
+            // ColorOS 设备提示
+            if (isColorOSDevice) {
+                Text(
+                    text = "检测到 ColorOS 系统，建议使用手动添加方式",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFFF9F0A),
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+            } else {
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+            
+            // 非 ColorOS 设备显示自动添加按钮
+            if (!isColorOSDevice) {
+                WidgetGuideButton(
+                    title = "自动添加",
+                    subtitle = "请求系统添加小组件到桌面",
+                    accentColor = accentColor,
+                    textColor = textColor,
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        tryRequestPinWidget(context, onDismiss)
+                    }
+                )
+                
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                // 打开小组件选择器
+                WidgetGuideButton(
+                    title = "打开小组件列表",
+                    subtitle = "跳转到系统小组件选择界面",
+                    accentColor = Color(0xFF5E5CE6),
+                    textColor = textColor,
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        tryOpenWidgetPicker(context, onDismiss)
+                    }
+                )
+                
+                Spacer(modifier = Modifier.height(20.dp))
+                
+                Text(
+                    text = "如果以上方式无效，请手动添加：",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.Medium
+                    ),
+                    color = textColor,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+            } else {
+                Text(
+                    text = "请按以下步骤手动添加：",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.Medium
+                    ),
+                    color = textColor,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+            }
+            
+            // 步骤说明 - ColorOS 特定
+            val steps = if (isColorOSDevice) {
+                listOf(
+                    "1. 返回桌面",
+                    "2. 双指捏合 或 长按空白区域",
+                    "3. 点击底部「卡片」或「小组件」",
+                    "4. 搜索或滚动找到「Tabula」",
+                    "5. 长按小组件拖动到桌面"
+                )
+            } else {
+                listOf(
+                    "1. 返回桌面，长按空白区域",
+                    "2. 选择「小组件」或「添加工具」",
+                    "3. 找到「Tabula」并添加"
+                )
+            }
+            
+            steps.forEach { step ->
+                Text(
+                    text = step,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = secondaryTextColor,
+                    modifier = Modifier.padding(vertical = 4.dp, horizontal = 8.dp)
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            // 关闭按钮
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(accentColor.copy(alpha = 0.15f))
+                    .clickable {
+                        HapticFeedback.lightTap(context)
+                        onDismiss()
+                    }
+                    .padding(vertical = 14.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "知道了",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.Medium
+                    ),
+                    color = accentColor
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 引导按钮组件
+ */
+@Composable
+private fun WidgetGuideButton(
+    title: String,
+    subtitle: String,
+    accentColor: Color,
+    textColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(accentColor.copy(alpha = 0.15f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontWeight = FontWeight.Medium
+                ),
+                color = textColor
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = textColor.copy(alpha = 0.6f)
+            )
+        }
+        Icon(
+            imageVector = Icons.AutoMirrored.Outlined.ArrowForward,
+            contentDescription = null,
+            tint = accentColor,
+            modifier = Modifier.size(20.dp)
+        )
+    }
+}
+
+/**
+ * 检测是否是 ColorOS / OPPO / OnePlus / realme 设备
+ */
+private fun isColorOS(): Boolean {
+    return try {
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val brand = Build.BRAND.lowercase()
+        manufacturer.contains("oppo") || 
+        manufacturer.contains("oneplus") || 
+        manufacturer.contains("realme") ||
+        brand.contains("oppo") || 
+        brand.contains("oneplus") || 
+        brand.contains("realme")
+    } catch (e: Exception) {
+        false
+    }
+}
+
+/**
+ * 尝试通过系统 API 请求添加小组件
+ */
+private fun tryRequestPinWidget(context: android.content.Context, onSuccess: () -> Unit) {
+    val tag = "WidgetPin"
+    
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+        Log.w(tag, "Android 版本低于 8.0，不支持 requestPinAppWidget")
+        Toast.makeText(context, "您的系统版本不支持自动添加，请手动添加", Toast.LENGTH_LONG).show()
+        return
+    }
+    
+    // ColorOS 设备对 requestPinAppWidget 支持有问题，直接提示手动添加
+    if (isColorOS()) {
+        Log.w(tag, "检测到 ColorOS 设备，requestPinAppWidget 可能无效")
+        Toast.makeText(context, "ColorOS 系统请使用「打开小组件列表」或手动添加", Toast.LENGTH_LONG).show()
+        return
+    }
+    
+    val appWidgetManager = AppWidgetManager.getInstance(context)
+    val widgetComponent = ComponentName(context, TabulaWidgetProvider::class.java)
+    
+    Log.d(tag, "检查 requestPinAppWidget 支持状态...")
+    Log.d(tag, "isRequestPinAppWidgetSupported: ${appWidgetManager.isRequestPinAppWidgetSupported}")
+    Log.d(tag, "设备信息: ${Build.MANUFACTURER} / ${Build.BRAND} / ${Build.MODEL}")
+    
+    if (appWidgetManager.isRequestPinAppWidgetSupported) {
+        try {
+            Log.d(tag, "调用 requestPinAppWidget...")
+            val success = appWidgetManager.requestPinAppWidget(widgetComponent, null, null)
+            Log.d(tag, "requestPinAppWidget 返回: $success")
+            
+            if (success) {
+                Toast.makeText(context, "请在弹出的对话框中确认添加", Toast.LENGTH_LONG).show()
+                onSuccess()
+            } else {
+                Toast.makeText(context, "添加请求失败，请尝试手动添加", Toast.LENGTH_LONG).show()
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "requestPinAppWidget 异常: ${e.message}", e)
+            Toast.makeText(context, "添加失败: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    } else {
+        Log.w(tag, "启动器不支持 requestPinAppWidget")
+        Toast.makeText(context, "您的桌面启动器不支持自动添加，请手动添加", Toast.LENGTH_LONG).show()
+    }
+}
+
+/**
+ * 尝试打开系统小组件选择器
+ */
+private fun tryOpenWidgetPicker(context: android.content.Context, onSuccess: () -> Unit) {
+    val tag = "WidgetPicker"
+    
+    Log.d(tag, "设备信息: ${Build.MANUFACTURER} / ${Build.BRAND} / ${Build.MODEL}")
+    
+    // 获取默认启动器包名
+    val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
+        addCategory(Intent.CATEGORY_HOME)
+    }
+    val defaultLauncher = context.packageManager.resolveActivity(launcherIntent, 0)?.activityInfo?.packageName
+    Log.d(tag, "默认启动器: $defaultLauncher")
+    
+    // 构建 Intent 列表
+    val intentsToTry = mutableListOf<Intent>()
+    
+    // 1. 根据默认启动器动态添加 Intent
+    defaultLauncher?.let { launcher ->
+        // 常见的小组件选择器 Activity 名称
+        val widgetActivities = listOf(
+            "$launcher.widget.WidgetContainerActivity",
+            "$launcher.widget.WidgetPickerActivity",
+            "$launcher.WidgetPicker",
+            "$launcher.widget.WidgetsFullSheet",
+            "com.android.launcher3.widget.WidgetsFullSheet",
+            "com.android.launcher3.WidgetPicker"
+        )
+        widgetActivities.forEach { activityName ->
+            intentsToTry.add(Intent().apply {
+                setClassName(launcher, activityName)
+            })
+        }
+    }
+    
+    // 2. ColorOS / OPPO 特定
+    if (isColorOS()) {
+        intentsToTry.addAll(listOf(
+            // ColorOS 14+ 卡片中心
+            Intent().apply {
+                setClassName("com.heytap.cardcenter", "com.heytap.cardcenter.ui.CardCenterActivity")
+            },
+            Intent().apply {
+                setClassName("com.heytap.cardcenter", "com.heytap.cardcenter.MainActivity")
+            },
+            // OPPO Launcher
+            Intent().apply {
+                setClassName("com.oppo.launcher", "com.oppo.launcher.widget.WidgetContainerActivity")
+            },
+            Intent().apply {
+                setClassName("com.oppo.launcher", "com.oppo.launcher.WidgetPicker")
+            },
+            // com.android.launcher（ColorOS 定制）
+            Intent().apply {
+                setClassName("com.android.launcher", "com.android.launcher.widget.WidgetContainerActivity")
+            },
+            Intent().apply {
+                setClassName("com.android.launcher", "com.android.launcher.widget.WidgetPickerActivity")
+            },
+            Intent().apply {
+                setClassName("com.android.launcher", "com.android.launcher.WidgetPicker")
+            },
+            Intent().apply {
+                setClassName("com.android.launcher", "com.oppo.launcher.widget.WidgetContainerActivity")
+            }
+        ))
+    }
+    
+    // 3. 其他厂商启动器
+    intentsToTry.addAll(listOf(
+        // MIUI
+        Intent().apply {
+            setClassName("com.miui.home", "com.miui.home.launcher.widget.WidgetPickerActivity")
+        },
+        // 华为 EMUI / HarmonyOS
+        Intent().apply {
+            setClassName("com.huawei.android.launcher", "com.huawei.android.launcher.widgetmanager.WidgetManagerActivity")
+        },
+        // 三星 One UI
+        Intent().apply {
+            setClassName("com.sec.android.app.launcher", "com.android.launcher3.widget.WidgetsFullSheet")
+        },
+        // Pixel Launcher
+        Intent().apply {
+            setClassName("com.google.android.apps.nexuslauncher", "com.android.launcher3.widget.WidgetsFullSheet")
+        },
+        // 通用 AOSP Launcher3
+        Intent().apply {
+            setClassName("com.android.launcher3", "com.android.launcher3.widget.WidgetsFullSheet")
+        }
+    ))
+    
+    // 4. 尝试启动各个 Intent
+    for (intent in intentsToTry) {
+        try {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val resolveInfo = context.packageManager.resolveActivity(intent, 0)
+            if (resolveInfo != null) {
+                Log.d(tag, "尝试启动: ${intent.component}")
+                context.startActivity(intent)
+                Toast.makeText(context, "请在列表中找到「Tabula」小组件", Toast.LENGTH_LONG).show()
+                onSuccess()
+                return
+            } else {
+                Log.d(tag, "无法解析: ${intent.component}")
+            }
+        } catch (e: Exception) {
+            Log.d(tag, "Intent 失败: ${intent.component}, 错误: ${e.message}")
+        }
+    }
+    
+    // 5. 所有方式都失败，不再跳转到桌面设置，直接提示手动操作
+    Log.w(tag, "无法打开小组件选择器，所有 Intent 均失败")
+    Toast.makeText(
+        context, 
+        "无法自动打开小组件列表\n请返回桌面 → 长按空白处 → 选择小组件 → 找到 Tabula", 
+        Toast.LENGTH_LONG
+    ).show()
 }
 
 // ========== 辅助组件 ==========

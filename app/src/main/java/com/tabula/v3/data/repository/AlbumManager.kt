@@ -606,6 +606,7 @@ class AlbumManager(private val context: Context) {
                         name = obj.getString("name"),
                         coverImageId = obj.optLong("coverImageId", -1).takeIf { it != -1L },
                         color = obj.optLong("color", -1).takeIf { it != -1L },
+                        textColor = obj.optLong("textColor", -1).takeIf { it != -1L },
                         emoji = obj.optString("emoji", "").takeIf { it.isNotBlank() },
                         order = obj.optInt("order", 0),
                         createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
@@ -633,6 +634,7 @@ class AlbumManager(private val context: Context) {
                     put("name", album.name)
                     put("coverImageId", album.coverImageId ?: -1)
                     put("color", album.color ?: -1)
+                    put("textColor", album.textColor ?: -1)
                     put("emoji", album.emoji ?: "")
                     put("order", album.order)
                     put("createdAt", album.createdAt)

@@ -3,7 +3,6 @@ package com.tabula.v3.ui.components
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -17,15 +16,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,9 +37,10 @@ import com.tabula.v3.ui.theme.LocalIsDarkTheme
  * - 根据selectedIndex高亮选中的标签
  * - 自动滚动到选中的标签
  * - 精确回调每个标签的屏幕位置
+ * - 新建按钮在第一个位置（索引0）
  *
  * @param albums 相册列表
- * @param selectedIndex 当前选中的标签索引
+ * @param selectedIndex 当前选中的标签索引（0 = 新建，1+ = 相册）
  * @param onTagPositionChanged 标签位置变化回调，返回索引和对应的屏幕坐标
  * @param modifier 外部修饰符
  */
@@ -52,15 +48,18 @@ import com.tabula.v3.ui.theme.LocalIsDarkTheme
 fun AlbumDropTarget(
     albums: List<Album>,
     selectedIndex: Int,
-    onTagPositionChanged: ((Int, Rect) -> Unit)? = null,
+    onTagPositionChanged: ((Int, TagPosition) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
+    val isDarkTheme = LocalIsDarkTheme.current
     
     // 自动滚动到选中的标签
+    // 使用 scrollToItem（瞬间滚动）而不是 animateScrollToItem（动画滚动）
+    // 这样位置数据会立即更新，避免用户快速松手时目标位置不准确的问题
     LaunchedEffect(selectedIndex) {
         if (selectedIndex >= 0) {
-            listState.animateScrollToItem(
+            listState.scrollToItem(
                 index = selectedIndex,
                 scrollOffset = -100 // 留一些边距
             )
@@ -70,33 +69,37 @@ fun AlbumDropTarget(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(top = 16.dp, bottom = 24.dp),
+            .padding(top = 12.dp, bottom = 20.dp),
         contentAlignment = Alignment.Center
     ) {
         LazyRow(
             state = listState,
-            contentPadding = PaddingValues(horizontal = 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            itemsIndexed(albums, key = { _, album -> album.id }) { index, album ->
+            // 新建按钮放在第一个位置（索引0）
+            item(key = "create_new") {
                 DropTargetChip(
-                    text = album.name,
-                    isSelected = index == selectedIndex,
-                    onPositioned = { bounds ->
-                        onTagPositionChanged?.invoke(index, bounds)
+                    text = "+ 新建图集",
+                    isSelected = selectedIndex == 0,
+                    isCreateNew = true,
+                    onPositioned = { coordinates ->
+                        onTagPositionChanged?.invoke(0, coordinates)
                     }
                 )
             }
             
-            // 新建按钮
-            item(key = "create_new") {
+            // 相册标签（索引从1开始）
+            itemsIndexed(albums, key = { _, album -> album.id }) { index, album ->
                 DropTargetChip(
-                    text = "+ 新建",
-                    isSelected = selectedIndex == albums.size,
-                    onPositioned = { bounds ->
-                        onTagPositionChanged?.invoke(albums.size, bounds)
+                    text = album.name,
+                    isSelected = (index + 1) == selectedIndex,
+                    backgroundColor = album.color,
+                    textColor = album.textColor,
+                    onPositioned = { coordinates ->
+                        onTagPositionChanged?.invoke(index + 1, coordinates)
                     }
                 )
             }
@@ -105,23 +108,33 @@ fun AlbumDropTarget(
 }
 
 /**
- * 单个标签Chip - 简洁文字样式
+ * 单个标签Chip - Glassmorphism 玻璃拟态风格
+ *
+ * 设计特点：
+ * - 高斯模糊背景 (20-30dp)
+ * - 半透明填充 (白色/黑色 40%-70%)
+ * - 细微边框 (0.5-1dp, 白色 20%-30% 透明度)
+ * - 选中时有放大效果
  *
  * @param text 标签文字
  * @param isSelected 是否选中
+ * @param isCreateNew 是否是新建按钮
  * @param onPositioned 位置回调，返回标签在屏幕上的坐标
  */
 @Composable
 private fun DropTargetChip(
     text: String,
     isSelected: Boolean,
-    onPositioned: ((Rect) -> Unit)? = null
+    isCreateNew: Boolean = false,
+    backgroundColor: Long? = null,  // 保留参数但不使用，保持接口兼容
+    textColor: Long? = null,        // 保留参数但不使用，保持接口兼容
+    onPositioned: ((TagPosition) -> Unit)? = null
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     
     // 选中时放大动画
     val scale by animateFloatAsState(
-        targetValue = if (isSelected) 1.1f else 1f,
+        targetValue = if (isSelected) 1.08f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMedium
@@ -129,34 +142,67 @@ private fun DropTargetChip(
         label = "chip_scale"
     )
     
-    // 选中时背景变色
-    val backgroundColor = if (isSelected) {
-        if (isDarkTheme) Color(0xFF48484A) else Color(0xFFD1D1D6)
+    // Glassmorphism 颜色配置
+    // 填充颜色：选中时更不透明
+    val fillColor = if (isDarkTheme) {
+        if (isSelected) Color.Black.copy(alpha = 0.65f) else Color.Black.copy(alpha = 0.45f)
     } else {
-        if (isDarkTheme) Color(0xFF2C2C2E) else Color(0xFFE5E5EA)
+        if (isSelected) Color.White.copy(alpha = 0.75f) else Color.White.copy(alpha = 0.55f)
     }
     
-    val textColor = if (isDarkTheme) Color.White else Color.Black
+    // 边框颜色：细微的白色/黑色边框
+    val borderColor = if (isDarkTheme) {
+        if (isSelected) Color.White.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.2f)
+    } else {
+        if (isSelected) Color.White.copy(alpha = 0.8f) else Color.White.copy(alpha = 0.5f)
+    }
     
-    // 简洁的文字标签样式
-    Box(
+    // 文字颜色
+    val chipTextColor = if (isDarkTheme) Color.White else Color.Black
+    
+    // 圆角
+    val cornerRadius = 14.dp
+    
+    // 使用 FrostedGlass 组件实现玻璃效果
+    FrostedGlass(
         modifier = Modifier
             .scale(scale)
-            .clip(RoundedCornerShape(20.dp))
-            .background(backgroundColor)
-            .padding(horizontal = 16.dp, vertical = 10.dp)
             .onGloballyPositioned { coordinates ->
-                onPositioned?.invoke(coordinates.boundsInRoot())
+                onPositioned?.invoke(
+                    TagPosition(
+                        coordinates = coordinates,
+                        updatedAt = android.os.SystemClock.uptimeMillis()
+                    )
+                )
             },
+        shape = RoundedCornerShape(cornerRadius),
+        blurRadius = 24.dp,
+        tint = fillColor,
+        borderBrush = Brush.verticalGradient(
+            colors = listOf(
+                borderColor,
+                borderColor.copy(alpha = borderColor.alpha * 0.5f)
+            )
+        ),
+        borderWidth = if (isSelected) 1.dp else 0.5.dp,
+        highlightBrush = Brush.verticalGradient(
+            colors = listOf(
+                Color.White.copy(alpha = if (isDarkTheme) 0.1f else 0.3f),
+                Color.White.copy(alpha = if (isDarkTheme) 0.02f else 0.05f)
+            )
+        ),
+        noiseAlpha = 0f,  // 不使用噪点
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = text,
-            color = textColor,
-            fontSize = 14.sp,
+            color = chipTextColor,
+            fontSize = 13.sp,
             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            overflow = TextOverflow.Ellipsis,
+            letterSpacing = 0.2.sp,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
         )
     }
 }

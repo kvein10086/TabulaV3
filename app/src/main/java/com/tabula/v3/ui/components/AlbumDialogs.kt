@@ -43,6 +43,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
@@ -58,12 +59,11 @@ import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.util.HapticFeedback
 
 /**
- * 相册创建/编辑对话框
+ * 图集创建/编辑对话框
  *
  * 支持：
- * - 输入相册名称
- * - 选择颜色
- * - 选择 Emoji 图标
+ * - 输入图集名称
+ * - 实时预览标签样式（使用内置 Glassmorphism 效果）
  *
  * 设计风格：iOS 风格的圆角卡片对话框
  */
@@ -73,6 +73,7 @@ fun AlbumEditDialog(
     isEdit: Boolean = false,
     initialName: String = "",
     initialColor: Long? = null,
+    initialTextColor: Long? = null,
     initialEmoji: String? = null,
     onConfirm: (name: String, color: Long?, emoji: String?) -> Unit,
     onDismiss: () -> Unit
@@ -82,8 +83,6 @@ fun AlbumEditDialog(
 
     // 状态
     var name by remember { mutableStateOf(initialName) }
-    var selectedColor by remember { mutableStateOf(initialColor) }
-    var selectedEmoji by remember { mutableStateOf(initialEmoji) }
 
     // 颜色
     val backgroundColor = if (isDarkTheme) Color(0xFF2C2C2E) else Color.White
@@ -138,7 +137,7 @@ fun AlbumEditDialog(
                     }
 
                     Text(
-                        text = if (isEdit) "编辑相册" else "新建相册",
+                        text = if (isEdit) "编辑图集" else "新建图集",
                         color = textColor,
                         fontSize = 17.sp,
                         fontWeight = FontWeight.SemiBold
@@ -148,7 +147,7 @@ fun AlbumEditDialog(
                         onClick = {
                             if (name.isNotBlank()) {
                                 HapticFeedback.mediumTap(context)
-                                onConfirm(name.trim(), selectedColor, selectedEmoji)
+                                onConfirm(name.trim(), null, null)
                             }
                         },
                         modifier = Modifier.size(40.dp),
@@ -164,21 +163,68 @@ fun AlbumEditDialog(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // 相册预览
+                // 标签样式预览 - 使用 Glassmorphism 效果
+                Text(
+                    text = "标签预览",
+                    color = secondaryColor,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                )
+                
+                // 模拟卡片底部的标签效果 - Glassmorphism 风格
                 Box(
                     modifier = Modifier
-                        .size(80.dp)
-                        .shadow(8.dp, RoundedCornerShape(20.dp))
-                        .clip(RoundedCornerShape(20.dp))
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
                         .background(
-                            selectedColor?.let { Color(it) } ?: Color(0xFF7986CB)
-                        ),
+                            Brush.linearGradient(
+                                colors = if (isDarkTheme) {
+                                    listOf(Color(0xFF2C2C2E), Color(0xFF1C1C1E))
+                                } else {
+                                    listOf(Color(0xFFE5E5EA), Color(0xFFF2F2F7))
+                                }
+                            )
+                        )
+                        .padding(20.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = selectedEmoji ?: "📷",
-                        fontSize = 36.sp
-                    )
+                    // 玻璃效果标签预览
+                    FrostedGlass(
+                        shape = RoundedCornerShape(14.dp),
+                        blurRadius = 24.dp,
+                        tint = if (isDarkTheme) {
+                            Color.Black.copy(alpha = 0.55f)
+                        } else {
+                            Color.White.copy(alpha = 0.65f)
+                        },
+                        borderBrush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                            colors = listOf(
+                                if (isDarkTheme) Color.White.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.6f),
+                                if (isDarkTheme) Color.White.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.3f)
+                            )
+                        ),
+                        borderWidth = 0.5.dp,
+                        highlightBrush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = if (isDarkTheme) 0.08f else 0.2f),
+                                Color.White.copy(alpha = 0.02f)
+                            )
+                        ),
+                        noiseAlpha = 0f,
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = name.ifBlank { "图集名称" },
+                            color = if (isDarkTheme) Color.White else Color.Black,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            letterSpacing = 0.2.sp,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
@@ -207,7 +253,7 @@ fun AlbumEditDialog(
                         ) {
                             if (name.isEmpty()) {
                                 Text(
-                                    text = "输入相册名称",
+                                    text = "输入图集名称",
                                     color = secondaryColor,
                                     fontSize = 17.sp,
                                     fontWeight = FontWeight.Medium
@@ -217,67 +263,17 @@ fun AlbumEditDialog(
                         }
                     }
                 )
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // 颜色选择
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                // 提示文字
                 Text(
-                    text = "选择颜色",
-                    color = secondaryColor,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 12.dp)
+                    text = "标签将使用统一的玻璃拟态风格显示",
+                    color = secondaryColor.copy(alpha = 0.7f),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Normal,
+                    modifier = Modifier.padding(top = 4.dp)
                 )
-
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Album.PRESET_COLORS.forEach { color ->
-                        ColorOption(
-                            color = color,
-                            isSelected = selectedColor == color,
-                            onClick = {
-                                HapticFeedback.lightTap(context)
-                                selectedColor = if (selectedColor == color) null else color
-                            }
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Emoji 选择
-                Text(
-                    text = "选择图标",
-                    color = secondaryColor,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 12.dp)
-                )
-
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Album.PRESET_EMOJIS.forEach { emoji ->
-                        EmojiOption(
-                            emoji = emoji,
-                            isSelected = selectedEmoji == emoji,
-                            isDarkTheme = isDarkTheme,
-                            onClick = {
-                                HapticFeedback.lightTap(context)
-                                selectedEmoji = if (selectedEmoji == emoji) null else emoji
-                            }
-                        )
-                    }
-                }
             }
         }
     }

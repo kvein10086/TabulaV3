@@ -21,8 +21,9 @@ enum class SyncMode {
  * @param id 唯一标识符（UUID）
  * @param name 相册名称
  * @param coverImageId 封面图片的 MediaStore ID（可选，无图片时为 null）
- * @param color 相册主题色（ARGB Long，可选）
- * @param emoji 相册图标 Emoji（可选，如 "🌅"）
+ * @param color 相册主题色/标签背景色（ARGB Long，可选）
+ * @param textColor 标签文字颜色（ARGB Long，可选，默认自动根据背景色计算）
+ * @param emoji 相册图标 Emoji（可选，如 "🌅"）- 已弃用
  * @param order 排序权重（越小越靠前）
  * @param createdAt 创建时间戳（毫秒）
  * @param imageCount 相册内图片数量（缓存值，便于显示）
@@ -35,6 +36,7 @@ data class Album(
     val name: String,
     val coverImageId: Long? = null,
     val color: Long? = null,
+    val textColor: Long? = null,
     val emoji: String? = null,
     val order: Int = 0,
     val createdAt: Long = System.currentTimeMillis(),
