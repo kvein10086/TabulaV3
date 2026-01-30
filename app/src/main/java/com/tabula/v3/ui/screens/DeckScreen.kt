@@ -665,7 +665,8 @@ private fun DeckContent(
                 
                 // 归类模式：显示标签选择器
                 // 只在归类模式下渲染 AlbumDropTarget，避免 FrostedGlass 在 alpha=0 时的视觉残留
-                if (isClassifyMode && albums.isNotEmpty()) {
+                // 即使没有图集，也显示标签选择器（只有"新建"按钮）
+                if (isClassifyMode) {
                     androidx.compose.animation.AnimatedVisibility(
                         visible = true,
                         enter = androidx.compose.animation.fadeIn(

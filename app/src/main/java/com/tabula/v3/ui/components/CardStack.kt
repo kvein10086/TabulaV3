@@ -933,8 +933,8 @@ fun SwipeableCardStack(
                                         // 判断滑动方向
                                         if (totalDy > totalDx * 1.5f && dragAmount.y < 0) {
                                             lockedDirection = SwipeDirection.UP
-                                        } else if (totalDy > totalDx * 1.5f && dragAmount.y > 0 && albums.isNotEmpty()) {
-                                            // 下滑且有图集可选
+                                        } else if (totalDy > totalDx * 1.5f && dragAmount.y > 0) {
+                                            // 下滑归类（即使没有图集，也可以下滑触发新建）
                                             lockedDirection = SwipeDirection.DOWN
                                         } else if (totalDx > 20f || totalDy > 20f) {
                                             lockedDirection = SwipeDirection.HORIZONTAL
@@ -1018,16 +1018,17 @@ fun SwipeableCardStack(
                                                 }
                                                 
                                                 // 归类模式下，根据X方向拖动切换标签
-                                                if (isClassifyMode && albums.isNotEmpty()) {
+                                                if (isClassifyMode) {
                                                     // 计算相对于进入归类模式时的X偏移
                                                     val relativeX = dragOffsetX.value - classifyStartX
                                                     // 每移动一定距离切换一个标签
                                                     val indexOffset = (relativeX / tagSwitchDistancePx).toInt()
                                                     // 计算新的选中索引
                                                     // 索引0是新建，索引1到albums.size是相册
-                                                    // 默认从索引1（第一个相册）开始
+                                                    // 默认从索引1（第一个相册）开始，没有图集时默认0（新建）
                                                     val maxIndex = albums.size  // 最大索引（最后一个相册）
-                                                    val newIndex = (1 + indexOffset).coerceIn(0, maxIndex)
+                                                    val startIndex = if (albums.isNotEmpty()) 1 else 0
+                                                    val newIndex = (startIndex + indexOffset).coerceIn(0, maxIndex)
                                                     
                                                     if (newIndex != selectedAlbumIndex) {
                                                         selectedAlbumIndex = newIndex

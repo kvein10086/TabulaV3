@@ -140,7 +140,7 @@ fun ModeToggle(
 
         // 按钮
         Row {
-            // 照片
+            // 卡片模式
             Box(
                 modifier = Modifier
                     .width(segmentWidth)
@@ -158,14 +158,14 @@ fun ModeToggle(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "照片",
+                    text = "卡片",
                     fontSize = fontSize,
                     fontWeight = if (!isAlbumMode) FontWeight.SemiBold else FontWeight.Medium,
                     color = if (!isAlbumMode) textColor else unselectedTextColor
                 )
             }
 
-            // 图集
+            // 图库模式
             Box(
                 modifier = Modifier
                     .width(segmentWidth)
@@ -183,7 +183,7 @@ fun ModeToggle(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "图集",
+                    text = "图库",
                     fontSize = fontSize,
                     fontWeight = if (isAlbumMode) FontWeight.SemiBold else FontWeight.Medium,
                     color = if (isAlbumMode) textColor else unselectedTextColor
