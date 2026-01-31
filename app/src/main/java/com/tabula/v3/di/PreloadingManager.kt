@@ -75,24 +75,44 @@ class PreloadingManager(
      * 预加载单张图片
      *
      * @param image 要预加载的图片
-     * @param targetSize 目标尺寸
+     * @param targetSize 目标尺寸（未使用，改为使用固定尺寸以匹配 ImageCard）
      */
     private suspend fun preloadImage(image: ImageFile, targetSize: IntSize) {
         try {
+            // 使用与 ImageCard 相同的缓存键格式
+            val cacheKey = "card_${image.id}"
+            
+            // 使用与 ImageCard 相同的尺寸计算逻辑
+            val loadSize = if (!image.hasDimensionInfo) {
+                Size(810, 1080)
+            } else {
+                val maxDimension = 1080
+                if (image.aspectRatio < 1f) {
+                    val height = maxDimension
+                    val width = (height * image.aspectRatio).toInt().coerceAtLeast(405)
+                    Size(width, height)
+                } else {
+                    val width = maxDimension
+                    val height = (width / image.aspectRatio).toInt().coerceAtLeast(405)
+                    Size(width, height)
+                }
+            }
+            
             val request = ImageRequest.Builder(context)
                 .data(image.uri)
-                // 关键：使用精确的卡片尺寸，严禁加载原图
-                .size(Size(targetSize.width, targetSize.height))
-                // 精确尺寸裁剪
-                .precision(coil.size.Precision.EXACT)
-                // 预加载到内存缓存
+                .size(loadSize)
+                // 使用与 ImageCard 相同的缓存键
+                .memoryCacheKey(cacheKey)
+                .diskCacheKey(cacheKey)
                 .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
                 .diskCachePolicy(coil.request.CachePolicy.ENABLED)
+                // 禁用硬件位图，与 ImageCard 保持一致
+                .allowHardware(false)
                 .build()
 
             imageLoader.enqueue(request)
 
-            Log.d(TAG, "预加载图片: ${image.displayName}, 尺寸: ${targetSize.width}x${targetSize.height}")
+            Log.d(TAG, "预加载图片: ${image.displayName}")
         } catch (e: Exception) {
             Log.w(TAG, "预加载失败: ${image.displayName}", e)
         }

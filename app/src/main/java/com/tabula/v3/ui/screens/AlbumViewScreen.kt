@@ -45,13 +45,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.Sync
-import androidx.compose.material.icons.outlined.SyncDisabled
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DriveFileMove
+import androidx.compose.material.icons.rounded.FileCopy
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -120,15 +120,14 @@ fun AlbumViewScreen(
     onCreateAlbum: (name: String, color: Long?, emoji: String?) -> Unit,
     onUpdateAlbum: (Album) -> Unit,
     onDeleteAlbum: (String) -> Unit,
-    onToggleSync: ((String, Boolean) -> Unit)? = null,
-    onChangeSyncMode: ((String, SyncMode) -> Unit)? = null,
     onNavigateBack: () -> Unit,
     initialAlbumId: String? = null,
     showHdrBadges: Boolean = false,
     showMotionBadges: Boolean = false,
     playMotionSound: Boolean = false,
     motionSoundVolume: Int = 100,
-    onMoveToAlbum: ((List<Long>, String) -> Unit)? = null
+    onMoveToAlbum: ((List<Long>, String) -> Unit)? = null,
+    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val context = LocalContext.current
@@ -191,12 +190,6 @@ fun AlbumViewScreen(
                 },
                 onEditClick = { editingAlbum = currentAlbum },
                 onDeleteClick = { deletingAlbum = currentAlbum },
-                onToggleSyncClick = if (onToggleSync != null) {
-                    { onToggleSync(currentAlbum.id, !currentAlbum.isSyncEnabled) }
-                } else null,
-                onChangeSyncModeClick = if (onChangeSyncMode != null) {
-                    { mode -> onChangeSyncMode(currentAlbum.id, mode) }
-                } else null,
                 onSetCover = if (onUpdateAlbum != null) { imageId ->
                     val updatedAlbum = currentAlbum.copy(coverImageId = imageId)
                     onUpdateAlbum(updatedAlbum)
@@ -204,7 +197,8 @@ fun AlbumViewScreen(
                 onNavigateBack = onNavigateBack,
                 albums = albums,
                 allImages = allImages,
-                onMoveToAlbum = onMoveToAlbum
+                onMoveToAlbum = onMoveToAlbum,
+                onCopyToAlbum = onCopyToAlbum
             )
         } else {
              // Loading state
@@ -269,13 +263,12 @@ private fun AlbumContentView(
     onImageClick: (ImageFile, SourceRect) -> Unit,
     onEditClick: () -> Unit,
     onDeleteClick: () -> Unit,
-    onToggleSyncClick: (() -> Unit)? = null,
-    onChangeSyncModeClick: ((SyncMode) -> Unit)? = null,
     onSetCover: ((Long) -> Unit)? = null,
     onNavigateBack: () -> Unit,
     albums: List<Album> = emptyList(),
     allImages: List<ImageFile> = emptyList(),
-    onMoveToAlbum: ((List<Long>, String) -> Unit)? = null
+    onMoveToAlbum: ((List<Long>, String) -> Unit)? = null,
+    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     var showMenu by remember { mutableStateOf(false) }
@@ -287,6 +280,7 @@ private fun AlbumContentView(
     
     // 图集选择弹窗状态
     var showAlbumPicker by remember { mutableStateOf(false) }
+    var isCopyMode by remember { mutableStateOf(false) }  // true=复制, false=移动
     
     // 退出多选模式
     fun exitSelectionMode() {
@@ -414,16 +408,6 @@ private fun AlbumContentView(
                                 fontSize = 20.sp,
                                 fontWeight = FontWeight.Bold
                             )
-                            // 同步状态指示
-                            if (album.isSyncEnabled) {
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Icon(
-                                    imageVector = Icons.Outlined.Sync,
-                                    contentDescription = "已同步",
-                                    tint = Color(0xFF30D158),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
                         }
                         Text(
                             text = "${images.size} 张照片",
@@ -443,83 +427,69 @@ private fun AlbumContentView(
 
                         DropdownMenu(
                             expanded = showMenu,
-                            onDismissRequest = { showMenu = false }
+                            onDismissRequest = { showMenu = false },
+                            modifier = Modifier
+                                .background(
+                                    color = if (isDarkTheme) Color(0xFF2C2C2E) else Color.White,
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                                .width(180.dp)
                         ) {
+                            // 编辑相册
                             DropdownMenuItem(
-                                text = { Text("编辑相册") },
+                                text = { 
+                                    Text(
+                                        "编辑相册",
+                                        color = textColor,
+                                        fontWeight = FontWeight.Medium
+                                    ) 
+                                },
                                 onClick = {
                                     showMenu = false
                                     onEditClick()
                                 },
                                 leadingIcon = {
-                                    Icon(Icons.Outlined.Edit, contentDescription = null)
-                                }
-                            )
-                            // 同步开关选项
-                            if (onToggleSyncClick != null) {
-                                DropdownMenuItem(
-                                    text = { 
-                                        Text(if (album.isSyncEnabled) "关闭系统同步" else "同步到系统相册")
-                                    },
-                                    onClick = {
-                                        showMenu = false
-                                        HapticFeedback.mediumTap(context)
-                                        onToggleSyncClick()
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = if (album.isSyncEnabled) 
-                                                Icons.Outlined.SyncDisabled 
-                                            else 
-                                                Icons.Outlined.Sync,
-                                            contentDescription = null,
-                                            tint = if (album.isSyncEnabled) 
-                                                Color(0xFFFF9F0A) 
-                                            else 
-                                                Color(0xFF30D158)
-                                        )
-                                    }
-                                )
-                                // 同步模式选择（仅当同步已开启时显示）
-                                if (album.isSyncEnabled && onChangeSyncModeClick != null) {
-                                    val isMoveMode = album.syncMode == SyncMode.MOVE
-                                    DropdownMenuItem(
-                                        text = { 
-                                            Column {
-                                                Text(
-                                                    text = "同步模式",
-                                                    fontSize = 14.sp,
-                                                    fontWeight = FontWeight.Medium
-                                                )
-                                                Text(
-                                                    text = if (isMoveMode) "移动（节省空间）" else "复制（保留原图）",
-                                                    fontSize = 12.sp,
-                                                    color = secondaryTextColor
-                                                )
-                                            }
-                                        },
-                                        onClick = {
-                                            showMenu = false
-                                            HapticFeedback.lightTap(context)
-                                            val newMode = if (isMoveMode) SyncMode.COPY else SyncMode.MOVE
-                                            onChangeSyncModeClick(newMode)
-                                        },
-                                        leadingIcon = {
-                                            Icon(
-                                                imageVector = Icons.Rounded.CheckCircle,
-                                                contentDescription = null,
-                                                tint = if (isMoveMode) Color(0xFF30D158) else Color(0xFF007AFF)
-                                            )
-                                        }
+                                    Icon(
+                                        Icons.Outlined.Edit, 
+                                        contentDescription = null,
+                                        tint = secondaryTextColor,
+                                        modifier = Modifier.size(20.dp)
                                     )
-                                }
-                            }
+                                },
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            )
+                            
+                            // 分隔线
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                                    .height(0.5.dp)
+                                    .background(secondaryTextColor.copy(alpha = 0.2f))
+                            )
+                            
+                            // 删除相册
                             DropdownMenuItem(
-                                text = { Text("删除相册", color = Color(0xFFFF3B30)) },
+                                text = { 
+                                    Text(
+                                        "删除相册", 
+                                        color = Color(0xFFFF3B30),
+                                        fontWeight = FontWeight.Medium
+                                    ) 
+                                },
                                 onClick = {
                                     showMenu = false
                                     onDeleteClick()
-                                }
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Outlined.Delete,
+                                        contentDescription = null,
+                                        tint = Color(0xFFFF3B30),
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                },
+                                modifier = Modifier.padding(horizontal = 4.dp)
                             )
                         }
                     }
@@ -527,7 +497,8 @@ private fun AlbumContentView(
             }
         }
 
-        if (images.isEmpty()) {
+        // 只有当 imageCount 也为 0 时才显示空状态，避免加载期间闪烁
+        if (images.isEmpty() && album.imageCount == 0) {
             // 空状态 - TaTa 占领相册
             Box(
                 modifier = Modifier
@@ -671,30 +642,62 @@ private fun AlbumContentView(
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // 复制到其他图集按钮
+                    if (onCopyToAlbum != null) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    HapticFeedback.mediumTap(context)
+                                    isCopyMode = true
+                                    showAlbumPicker = true
+                                }
+                                .padding(horizontal = 24.dp, vertical = 8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.FileCopy,
+                                contentDescription = "复制到图集",
+                                tint = Color(0xFF30D158),
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "复制到图集",
+                                color = Color(0xFF30D158),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                    
                     // 移动到其他图集按钮
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                HapticFeedback.mediumTap(context)
-                                showAlbumPicker = true
-                            }
-                            .padding(horizontal = 24.dp, vertical = 8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.DriveFileMove,
-                            contentDescription = "移动到图集",
-                            tint = Color(0xFF007AFF),
-                            modifier = Modifier.size(28.dp)
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "移动到图集",
-                            color = Color(0xFF007AFF),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium
-                        )
+                    if (onMoveToAlbum != null) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    HapticFeedback.mediumTap(context)
+                                    isCopyMode = false
+                                    showAlbumPicker = true
+                                }
+                                .padding(horizontal = 24.dp, vertical = 8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.DriveFileMove,
+                                contentDescription = "移动到图集",
+                                tint = Color(0xFF007AFF),
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "移动到图集",
+                                color = Color(0xFF007AFF),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     }
                 }
             }
@@ -705,9 +708,14 @@ private fun AlbumContentView(
             AlbumPickerDialog(
                 albums = albums.filter { it.id != album.id },  // 排除当前图集
                 allImages = allImages,
+                title = if (isCopyMode) "复制到图集" else "移动到图集",
                 onAlbumSelected = { targetAlbumId ->
-                    // 执行移动操作
-                    onMoveToAlbum?.invoke(selectedImageIds.toList(), targetAlbumId)
+                    // 根据模式执行复制或移动操作
+                    if (isCopyMode) {
+                        onCopyToAlbum?.invoke(selectedImageIds.toList(), targetAlbumId)
+                    } else {
+                        onMoveToAlbum?.invoke(selectedImageIds.toList(), targetAlbumId)
+                    }
                     showAlbumPicker = false
                     exitSelectionMode()
                     HapticFeedback.mediumTap(context)
@@ -908,14 +916,26 @@ private fun PhotoGridItem(
         if (showCoverMenu && onSetCover != null && !isSelectionMode) {
             DropdownMenu(
                 expanded = showCoverMenu,
-                onDismissRequest = { showCoverMenu = false }
+                onDismissRequest = { showCoverMenu = false },
+                modifier = Modifier
+                    .background(
+                        color = Color(0xFF2C2C2E),
+                        shape = RoundedCornerShape(12.dp)
+                    )
             ) {
                 DropdownMenuItem(
-                    text = { Text("设为相册封面") },
+                    text = { 
+                        Text(
+                            "设为相册封面",
+                            color = Color.White,
+                            fontWeight = FontWeight.Medium
+                        ) 
+                    },
                     onClick = {
                         showCoverMenu = false
                         onSetCover()
-                    }
+                    },
+                    modifier = Modifier.padding(horizontal = 4.dp)
                 )
             }
         }
@@ -955,6 +975,7 @@ private fun rememberPhotoGridBadges(
 private fun AlbumPickerDialog(
     albums: List<Album>,
     allImages: List<ImageFile>,
+    title: String = "移动到图集",
     onAlbumSelected: (String) -> Unit,
     onDismiss: () -> Unit,
     isDarkTheme: Boolean
@@ -1018,7 +1039,7 @@ private fun AlbumPickerDialog(
                 
                 // 标题
                 Text(
-                    text = "移动到图集",
+                    text = title,
                     color = textColor,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,

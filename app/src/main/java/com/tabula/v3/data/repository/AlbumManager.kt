@@ -8,10 +8,15 @@ import com.tabula.v3.data.model.AlbumActionType
 import com.tabula.v3.data.model.AlbumMapping
 import com.tabula.v3.data.model.PendingAlbumAction
 import com.tabula.v3.data.model.SyncMode
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -59,11 +64,18 @@ class AlbumManager(private val context: Context) {
 
     // 撤销队列
     private val undoQueue = mutableListOf<PendingAlbumAction>()
+    
+    // 延迟同步相关
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val pendingSyncAlbums = mutableSetOf<String>()  // 待同步的图集 ID
+    private var syncJob: Job? = null
+    private val syncDelayMs = 2000L  // 延迟 2 秒同步
 
     // ========== 相册 CRUD ==========
 
     /**
      * 创建新相册
+     * 自动在系统相册中创建对应的相册文件夹
      */
     suspend fun createAlbum(
         name: String,
@@ -73,17 +85,28 @@ class AlbumManager(private val context: Context) {
         val currentAlbums = loadAlbums()
         val maxOrder = currentAlbums.maxOfOrNull { it.order } ?: 0
 
+        // 在系统相册中创建对应的文件夹
+        val systemPath = try {
+            syncManager.createSystemAlbum(name)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create system album for $name", e)
+            null
+        }
+
         val newAlbum = Album(
             name = name,
             color = color,
             emoji = emoji,
-            order = maxOrder + 1
+            order = maxOrder + 1,
+            isSyncEnabled = true,  // 默认开启自动同步
+            systemAlbumPath = systemPath
         )
 
         val updatedAlbums = currentAlbums + newAlbum
         saveAlbums(updatedAlbums)
         _albums.value = updatedAlbums
 
+        Log.d(TAG, "Created album '$name' with system path: $systemPath")
         newAlbum
     }
 
@@ -187,9 +210,8 @@ class AlbumManager(private val context: Context) {
         // 更新相册图片数量和封面
         updateAlbumStats(albumId)
 
-        // 注意：不再自动同步到系统相册
-        // 用户需要手动点击同步按钮来同步图片到手机相册
-        // 这样可以避免每次添加图片都立即出现在微信等应用的最近照片中
+        // 延迟自动同步到系统相册
+        scheduleSyncForAlbum(albumId)
 
         // 记录撤销操作
         if (recordUndo) {
@@ -304,6 +326,39 @@ class AlbumManager(private val context: Context) {
         updateAlbumStats(toAlbumId)
         
         Log.d(TAG, "Moved ${imageIds.size} images from $fromAlbumId to $toAlbumId")
+    }
+    
+    /**
+     * 批量将图片复制到另一个图集
+     * 不会从当前图集移除，只添加到目标图集
+     */
+    suspend fun copyImagesToAlbum(
+        imageIds: List<Long>,
+        toAlbumId: String
+    ) = withContext(Dispatchers.IO) {
+        if (imageIds.isEmpty()) return@withContext
+        
+        val currentMappings = loadMappings()
+        val updatedMappings = currentMappings.map { mapping ->
+            if (mapping.imageId in imageIds) {
+                // 添加到目标图集（保留原有图集）
+                val newAlbumIds = (mapping.albumIds + toAlbumId).distinct()
+                mapping.copy(
+                    albumIds = newAlbumIds,
+                    addedAt = System.currentTimeMillis()
+                )
+            } else {
+                mapping
+            }
+        }
+        
+        saveMappings(updatedMappings)
+        _mappings.value = updatedMappings
+        
+        // 更新目标图集的统计信息
+        updateAlbumStats(toAlbumId)
+        
+        Log.d(TAG, "Copied ${imageIds.size} images to $toAlbumId")
     }
 
     // ========== 撤销功能 ==========
@@ -427,6 +482,39 @@ class AlbumManager(private val context: Context) {
     }
 
     /**
+     * 安排延迟同步图集
+     * 使用防抖动机制，在 2 秒内的多次调用只会触发一次同步
+     */
+    private fun scheduleSyncForAlbum(albumId: String) {
+        synchronized(pendingSyncAlbums) {
+            pendingSyncAlbums.add(albumId)
+        }
+        
+        // 取消之前的同步任务，重新开始计时
+        syncJob?.cancel()
+        syncJob = scope.launch {
+            delay(syncDelayMs)
+            
+            // 获取并清空待同步列表
+            val albumsToSync: Set<String>
+            synchronized(pendingSyncAlbums) {
+                albumsToSync = pendingSyncAlbums.toSet()
+                pendingSyncAlbums.clear()
+            }
+            
+            // 执行同步
+            for (id in albumsToSync) {
+                try {
+                    syncAlbumImagesToSystem(id)
+                    Log.d(TAG, "Auto-synced album $id to system")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to auto-sync album $id", e)
+                }
+            }
+        }
+    }
+
+    /**
      * 同步相册中的图片到系统相册
      */
     suspend fun syncAlbumImagesToSystem(
@@ -434,7 +522,8 @@ class AlbumManager(private val context: Context) {
         onProgress: ((Int, Int) -> Unit)? = null
     ): Int = withContext(Dispatchers.IO) {
         val album = loadAlbums().find { it.id == albumId } ?: return@withContext 0
-        if (!album.isSyncEnabled) return@withContext 0
+        // 不再检查 isSyncEnabled，因为所有图集都自动同步
+        // if (!album.isSyncEnabled) return@withContext 0
 
         val imageIds = getImageIdsForAlbum(albumId)
         val mappings = loadMappings()

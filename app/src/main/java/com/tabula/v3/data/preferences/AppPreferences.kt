@@ -210,16 +210,35 @@ class AppPreferences(context: Context) {
             // prefs.edit().putBoolean(KEY_LIQUID_GLASS_LAB_ENABLED, value).apply()
         }
 
-    // 照片抽取时间戳和冷却天数记录（用于冷却期逻辑）
+    /**
+     * 是否已完成引导流程
+     * 首次启动时为 false，完成引导后设为 true
+     */
+    var hasCompletedOnboarding: Boolean
+        get() = prefs.getBoolean(KEY_HAS_COMPLETED_ONBOARDING, false)
+        set(value) = prefs.edit().putBoolean(KEY_HAS_COMPLETED_ONBOARDING, value).apply()
+
+    // 照片抽取时间戳和冷却天数记录（用于随机漫步模式冷却期逻辑）
     private val pickTimestampsPrefs: SharedPreferences = context.getSharedPreferences(
         PICK_TIMESTAMPS_PREFS_NAME,
         Context.MODE_PRIVATE
     )
+    
+    // 相似组冷却记录（用于相似推荐模式，独立于随机漫步模式）
+    private val similarGroupsPrefs: SharedPreferences = context.getSharedPreferences(
+        SIMILAR_GROUPS_PREFS_NAME,
+        Context.MODE_PRIVATE
+    )
 
     /**
-     * 可选的冷却天数（随机分配）
+     * 可选的冷却天数（随机分配）- 用于随机漫步模式
      */
     private val cooldownOptions = listOf(7, 12, 24)
+    
+    /**
+     * 相似组冷却天数选项 - 相似模式的冷却期较短
+     */
+    private val similarGroupCooldownOptions = listOf(3, 5, 7)
 
     /**
      * 记录照片被抽取的时间，并随机分配冷却天数
@@ -319,6 +338,82 @@ class AppPreferences(context: Context) {
         
         editor.apply()
     }
+    
+    // ==================== 相似组冷却机制（独立于随机漫步模式）====================
+    
+    /**
+     * 记录相似组已被处理
+     * 
+     * @param groupId 相似组的唯一标识
+     */
+    fun recordSimilarGroupProcessed(groupId: String) {
+        val randomCooldownDays = similarGroupCooldownOptions.random()
+        similarGroupsPrefs.edit()
+            .putLong("time_$groupId", System.currentTimeMillis())
+            .putInt("days_$groupId", randomCooldownDays)
+            .apply()
+    }
+    
+    /**
+     * 检查相似组是否在冷却期内
+     * 
+     * @param groupId 相似组的唯一标识
+     * @return true 如果在冷却期内
+     */
+    fun isSimilarGroupInCooldown(groupId: String): Boolean {
+        val processedTime = similarGroupsPrefs.getLong("time_$groupId", 0L)
+        if (processedTime == 0L) return false
+        
+        val cooldownDays = similarGroupsPrefs.getInt("days_$groupId", similarGroupCooldownOptions.first())
+        val cooldownMillis = cooldownDays.toLong() * 24 * 60 * 60 * 1000
+        return System.currentTimeMillis() - processedTime < cooldownMillis
+    }
+    
+    /**
+     * 获取当前在冷却期内的相似组ID集合
+     * 
+     * @return 冷却中的组ID集合
+     */
+    fun getSimilarGroupCooldownIds(): Set<String> {
+        val now = System.currentTimeMillis()
+        val cooldownIds = mutableSetOf<String>()
+        
+        similarGroupsPrefs.all.forEach { (key, value) ->
+            if (key.startsWith("time_") && value is Long) {
+                val groupId = key.removePrefix("time_")
+                val cooldownDays = similarGroupsPrefs.getInt("days_$groupId", similarGroupCooldownOptions.first())
+                val cooldownMillis = cooldownDays.toLong() * 24 * 60 * 60 * 1000
+                
+                if (now - value < cooldownMillis) {
+                    cooldownIds.add(groupId)
+                }
+            }
+        }
+        
+        return cooldownIds
+    }
+    
+    /**
+     * 清理过期的相似组冷却记录
+     * 使用最大冷却期（7天）来判断是否过期
+     */
+    fun cleanupExpiredSimilarGroupRecords() {
+        val maxCooldownMillis = 7L * 24 * 60 * 60 * 1000 // 7天
+        val now = System.currentTimeMillis()
+        val editor = similarGroupsPrefs.edit()
+        val keysToRemove = mutableListOf<String>()
+        
+        similarGroupsPrefs.all.forEach { (key, value) ->
+            if (key.startsWith("time_") && value is Long && now - value > maxCooldownMillis) {
+                val groupId = key.removePrefix("time_")
+                keysToRemove.add("time_$groupId")
+                keysToRemove.add("days_$groupId")
+            }
+        }
+        
+        keysToRemove.forEach { editor.remove(it) }
+        editor.apply()
+    }
 
     companion object {
         private const val PREFS_NAME = "tabula_prefs"
@@ -342,8 +437,10 @@ class AppPreferences(context: Context) {
         private const val KEY_PENDING_BATCH_REMAINING = "pending_batch_remaining"
         private const val KEY_CARD_STYLE_MODE = "card_style_mode"
         private const val KEY_LIQUID_GLASS_LAB_ENABLED = "liquid_glass_lab_enabled"
+        private const val KEY_HAS_COMPLETED_ONBOARDING = "has_completed_onboarding"
 
         private const val PICK_TIMESTAMPS_PREFS_NAME = "tabula_pick_timestamps"
+        private const val SIMILAR_GROUPS_PREFS_NAME = "tabula_similar_groups"
 
         const val DEFAULT_BATCH_SIZE = 15
         val BATCH_SIZE_OPTIONS = listOf(5, 10, 15, 20, 30, 50)

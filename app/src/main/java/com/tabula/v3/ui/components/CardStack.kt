@@ -39,10 +39,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import android.graphics.Bitmap
 import android.os.SystemClock
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.unit.IntSize
 import coil.imageLoader
 import coil.memory.MemoryCache
 import com.tabula.v3.data.model.Album
 import com.tabula.v3.data.model.ImageFile
+import com.tabula.v3.di.PreloadingManager
 import com.tabula.v3.ui.util.HapticFeedback
 import com.tabula.v3.ui.util.rememberImageFeatures
 import kotlinx.coroutines.Dispatchers
@@ -173,7 +176,7 @@ fun SwipeableCardStack(
 
     // 动画时长
     val shuffleAnimDuration = 120
-    val genieAnimDuration = 380  // Genie动画时长（与GenieAnimationController同步）
+    val genieAnimDuration = 520  // Genie动画时长（更丝滑的观感）
 
     // ========== 顶层卡片拖拽状态 ==========
     val dragOffsetX = remember { Animatable(0f) }
@@ -218,6 +221,19 @@ fun SwipeableCardStack(
             preloadedDeleteBitmap?.recycle()
             preloadedDeleteBitmap = null
         }
+    }
+    
+    // ========== 图片预加载 ==========
+    // 预加载当前索引前后的图片，加快卡片显示速度
+    val preloadingManager = remember { PreloadingManager(context, preloadRange = 3) }
+    
+    LaunchedEffect(currentIndex, images) {
+        // 预加载当前索引周围的图片
+        preloadingManager.preloadAround(
+            images = images,
+            currentIndex = currentIndex,
+            cardSize = IntSize(1080, 1440)  // 与 ImageCard 的最大尺寸匹配
+        )
     }
 
     // ========== 背景卡片呼吸感响应 ==========

@@ -31,9 +31,9 @@ import com.tabula.v3.di.CoilSetup
  * - Fit 模式：完整显示图片内容，可能有黑边（自适应样式）
  * 
  * 性能优化：
- * - 使用固定的目标尺寸 (1080px)，避免加载原始 4K/HDR 图片
+ * - 使用较小的目标尺寸 (1080px)，加快解码速度
+ * - 禁用硬件位图避免 HDR/大图兼容性问题
  * - 使用稳定的缓存键，防止重复加载
- * - 禁用不必要的重组触发
  *
  * @param imageFile 要显示的图片
  * @param modifier 外部修饰符
@@ -54,24 +54,23 @@ fun ImageCard(
     val imageLoader = CoilSetup.getImageLoader(context)
     val shape = RoundedCornerShape(cornerRadius)
     
-    // 根据图片比例计算合适的加载尺寸
-    // 保持图片原始比例，避免 Coil 加载时预先裁剪
-    // 当图片没有有效尺寸信息时，使用默认的 3:4 加载尺寸
+    // 优化：降低目标尺寸以加快解码速度
+    // 卡片预览不需要 4K 分辨率，1080px 足够清晰
     val targetSize = remember(imageFile.id, imageFile.aspectRatio, imageFile.hasDimensionInfo) {
         if (!imageFile.hasDimensionInfo) {
             // 无有效尺寸信息，使用默认的 3:4 尺寸
-            Size(1080, 1440)
+            Size(810, 1080)
         } else {
-            val maxDimension = 1440
+            val maxDimension = 1080  // 从 1440 降到 1080
             if (imageFile.aspectRatio < 1f) {
                 // 竖图：高度为主
                 val height = maxDimension
-                val width = (height * imageFile.aspectRatio).toInt().coerceAtLeast(540)
+                val width = (height * imageFile.aspectRatio).toInt().coerceAtLeast(405)
                 Size(width, height)
             } else {
                 // 横图：宽度为主
                 val width = maxDimension
-                val height = (width / imageFile.aspectRatio).toInt().coerceAtLeast(540)
+                val height = (width / imageFile.aspectRatio).toInt().coerceAtLeast(405)
                 Size(width, height)
             }
         }
@@ -97,16 +96,18 @@ fun ImageCard(
         AsyncImage(
             model = ImageRequest.Builder(context)
                 .data(imageFile.uri)
-                .size(targetSize)  // 根据模式计算的尺寸
-                .memoryCacheKey(cacheKey)  // 稳定的缓存键
+                .size(targetSize)
+                .memoryCacheKey(cacheKey)
                 .diskCacheKey(cacheKey)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
+                // 性能优化：禁用硬件位图，避免 HDR/大图解码问题
+                .allowHardware(false)
                 .crossfade(150)
                 .build(),
             contentDescription = imageFile.displayName,
             imageLoader = imageLoader,
-            contentScale = contentScaleMode,  // 根据模式选择缩放方式
+            contentScale = contentScaleMode,
             modifier = Modifier.fillMaxSize()
         )
 

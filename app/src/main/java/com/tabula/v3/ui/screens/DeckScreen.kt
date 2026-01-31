@@ -6,6 +6,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -38,10 +39,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.ViewList
-import androidx.compose.material.icons.rounded.ViewModule
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -160,6 +158,8 @@ fun DeckScreen(
     currentImageAlbumIds: Set<String> = emptySet(),
     onAlbumSelect: (imageId: Long, imageUri: String, albumId: String) -> Unit = { _, _, _ -> },
     onCreateAlbum: (name: String, color: Long?, emoji: String?) -> Unit = { _, _, _ -> },
+    // 新建图集并归档图片（用于下滑归类时选择"新建"的场景）
+    onCreateAlbumAndClassify: (name: String, color: Long?, emoji: String?, ImageFile) -> Unit = { _, _, _, _ -> },
     onUndoAlbumAction: () -> Unit = {},
     onReorderAlbums: (List<String>) -> Unit = {},
     onSystemBucketClick: (String) -> Unit = {},
@@ -198,10 +198,16 @@ fun DeckScreen(
     
     // 下滑归类模式状态（用于隐藏底部切换按钮）
     var isClassifyMode by remember { mutableStateOf(false) }
+    
+    // 等待归档的图片（用于新建图集时自动归档）
+    var pendingClassifyImage by remember { mutableStateOf<ImageFile?>(null) }
 
     // 用于异步初始化批次
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var needsInitialBatch by remember { mutableStateOf(true) }
+    
+    // 加载下一组的状态（用于显示加载指示器）
+    var isLoadingNextBatch by remember { mutableStateOf(false) }
     
     // 监听批次剩余数量变化，通知流体云
     androidx.compose.runtime.LaunchedEffect(currentBatch, currentIndex, deckState) {
@@ -246,15 +252,22 @@ fun DeckScreen(
 
     // 开始新一组
     fun startNewBatch() {
+        if (isLoadingNextBatch) return  // 防止重复点击
+        
         scope.launch {
-            val newBatch = getRecommendedBatch(allImages, batchSize)
-            if (newBatch.isNotEmpty()) {
-                currentBatch = newBatch
-                currentIndex = 0
-                markedCount = 0
-                deckState = DeckState.BROWSING
-            } else {
-                 deckState = DeckState.COMPLETED
+            isLoadingNextBatch = true
+            try {
+                val newBatch = getRecommendedBatch(allImages, batchSize)
+                if (newBatch.isNotEmpty()) {
+                    currentBatch = newBatch
+                    currentIndex = 0
+                    markedCount = 0
+                    deckState = DeckState.BROWSING
+                } else {
+                    deckState = DeckState.COMPLETED
+                }
+            } finally {
+                isLoadingNextBatch = false
             }
         }
     }
@@ -279,7 +292,18 @@ fun DeckScreen(
                 else -> "browsing"
             },
             transitionSpec = {
-                fadeIn() togetherWith fadeOut()
+                // 从 completed 切换到 browsing 时使用更快的动画，减少闪烁感
+                when {
+                    initialState == "completed" && targetState == "browsing" -> {
+                        // 快速切换：新页面立即显示，旧页面快速淡出
+                        fadeIn(animationSpec = tween(150)) togetherWith 
+                            fadeOut(animationSpec = tween(100))
+                    }
+                    else -> {
+                        fadeIn(animationSpec = tween(300)) togetherWith 
+                            fadeOut(animationSpec = tween(300))
+                    }
+                }
             },
             label = "deck_state",
             modifier = Modifier.fillMaxSize()
@@ -292,7 +316,8 @@ fun DeckScreen(
                         totalReviewed = currentBatch.size,
                         totalMarked = markedCount,
                         onContinue = { startNewBatch() },
-                        onViewMarked = onNavigateToTrash
+                        onViewMarked = onNavigateToTrash,
+                        isLoading = isLoadingNextBatch
                     )
                 }
                 "albums" -> {
@@ -372,7 +397,10 @@ fun DeckScreen(
                                 }
                             }
                         },
-                        onAddAlbumClick = { showCreateAlbumDialog = true },
+                        onAddAlbumClick = { image ->
+                            pendingClassifyImage = image  // 保存待归档的图片
+                            showCreateAlbumDialog = true
+                        },
                         onAlbumsClick = onNavigateToAlbums,
                         isAlbumMode = isAlbumMode,
                         onModeChange = onModeChange,
@@ -500,10 +528,38 @@ fun DeckScreen(
         AlbumEditDialog(
             isEdit = false,
             onConfirm = { name, color, emoji ->
-                onCreateAlbum(name, color, emoji)
+                val pending = pendingClassifyImage
+                if (pending != null) {
+                    // 有待归档的图片，创建图集后自动归档
+                    onCreateAlbumAndClassify(name, color, emoji, pending)
+                    pendingClassifyImage = null
+                    
+                    // 显示成功提示
+                    undoMessage = "已添加到「$name」"
+                    showUndoSnackbar = true
+                    
+                    // 移除当前图片并切换到下一张
+                    val imageIndex = currentBatch.indexOf(pending)
+                    lastClassifiedImage = pending
+                    lastClassifiedIndex = imageIndex
+                    lastClassifyWasSwipe = true
+                    
+                    if (imageIndex >= 0) {
+                        currentBatch = currentBatch.toMutableList().also { it.removeAt(imageIndex) }
+                        if (currentIndex >= currentBatch.size && currentIndex > 0) {
+                            currentIndex = currentBatch.size - 1
+                        }
+                    }
+                } else {
+                    // 普通新建图集
+                    onCreateAlbum(name, color, emoji)
+                }
                 showCreateAlbumDialog = false
             },
-            onDismiss = { showCreateAlbumDialog = false }
+            onDismiss = { 
+                showCreateAlbumDialog = false
+                pendingClassifyImage = null  // 取消时清除待归档图片
+            }
         )
     }
 }
@@ -528,7 +584,7 @@ private fun DeckContent(
     onTrashClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onAlbumClick: (Album) -> Unit,
-    onAddAlbumClick: () -> Unit,
+    onAddAlbumClick: (ImageFile?) -> Unit,  // 可选参数：待归档的图片
     onAlbumsClick: () -> Unit,
     isAlbumMode: Boolean = false,
     onModeChange: (Boolean) -> Unit = {},
@@ -604,8 +660,8 @@ private fun DeckContent(
                             onSwipeClassifyToAlbum(image, album)
                         },
                         onCreateNewAlbum = { image ->
-                            // 打开新建图集对话框
-                            onAddAlbumClick()
+                            // 打开新建图集对话框，并传递待归档的图片
+                            onAddAlbumClick(image)
                         },
                         onClassifyModeChange = { mode ->
                             isClassifyMode = mode
@@ -797,10 +853,7 @@ private fun AlbumsGridContent(
 
     var showCreateDialog by remember { mutableStateOf(false) }
     
-    // TODO
-    var isTabbedView by remember { mutableStateOf(false) }
-    // TODO
-    var selectedTab by remember { mutableIntStateOf(0) }
+    // 简化后只显示 App 图集，移除了 Tab 切换功能
 
     // 内容层的滚动状态
     val listState = rememberLazyListState()
@@ -850,109 +903,8 @@ private fun AlbumsGridContent(
         100.dp
     }
 
-    // 减少间距以紧凑显示
-    val contentTopPadding = topBarVisibleHeight + if (isTabbedView) 12.dp else 8.dp
-    // Tab切换器配置
-    val tabSegmentWidth = 100.dp
-    
-    // 滑块动画偏移量（使用 Float + graphicsLayer，避免重新布局导致的闪烁）
-    // 使用弹簧动画，带有轻微弹跳效果
-    val tabSliderOffsetPx by animateFloatAsState(
-        targetValue = with(LocalDensity.current) { 
-            if (selectedTab == 0) 0f else tabSegmentWidth.toPx() 
-        },
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioLowBouncy,
-            stiffness = Spring.StiffnessMedium
-        ),
-        label = "tab_slider_offset_px"
-    )
-    
-    val tabSwitcher: (@Composable () -> Unit)? = if (isTabbedView) {
-        {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(100))
-                        .background(if (isDarkTheme) Color(0xFF2C2C2E) else Color(0xFFE5E5EA))
-                        .padding(2.dp),
-                    contentAlignment = Alignment.CenterStart
-                ) {
-                    // 滑块背景 - 使用 graphicsLayer 进行动画，避免重新布局导致的闪烁
-                    Box(
-                        modifier = Modifier
-                            .width(tabSegmentWidth)
-                            .graphicsLayer {
-                                translationX = tabSliderOffsetPx
-                            }
-                            .clip(RoundedCornerShape(100))
-                            .background(
-                                if (isDarkTheme) Color(0xFF636366) else Color.White
-                            )
-                            .padding(vertical = 6.dp)
-                    ) {
-                        // 占位文本保持高度一致
-                        Text(text = " ", fontSize = 14.sp)
-                    }
-                    
-                    // 按钮区域 - 禁用 ripple 效果，避免点击时背景变深
-                    Row {
-                        // App图集按钮
-                        Box(
-                            modifier = Modifier
-                                .width(tabSegmentWidth)
-                                .clip(RoundedCornerShape(100))
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null  // 禁用 ripple
-                                ) {
-                                    com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                                    selectedTab = 0
-                                }
-                                .padding(vertical = 6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "App图集",
-                                fontSize = 14.sp,
-                                fontWeight = if (selectedTab == 0) FontWeight.SemiBold else FontWeight.Medium,
-                                color = textColor
-                            )
-                        }
-
-                        // 手机相册按钮
-                        Box(
-                            modifier = Modifier
-                                .width(tabSegmentWidth)
-                                .clip(RoundedCornerShape(100))
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null  // 禁用 ripple
-                                ) {
-                                    com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                                    selectedTab = 1
-                                }
-                                .padding(vertical = 6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "手机相册",
-                                fontSize = 14.sp,
-                                fontWeight = if (selectedTab == 1) FontWeight.SemiBold else FontWeight.Medium,
-                                color = textColor
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    } else {
-        null
-    }
+    // 顶部内容间距
+    val contentTopPadding = topBarVisibleHeight + 8.dp
 
     Box(
         modifier = Modifier
@@ -960,8 +912,7 @@ private fun AlbumsGridContent(
             .background(backgroundColor)
     ) {
         // 1. Blurred backdrop (top bar region only)
-        // 注意：模糊层不传 headerContent，避免 Tab 切换器被模糊后与正常层叠加造成颜色异常
-        // 重要：模糊层使用独立的 blurListState，固定在初始位置不滚动
+        // 模糊层使用独立的 blurListState，固定在初始位置不滚动
         // 这样模糊层只渲染顶部的几个项目，避免与内容层双重渲染导致图片加载任务翻倍触发 ANR
         Box(
             modifier = Modifier
@@ -971,8 +922,8 @@ private fun AlbumsGridContent(
                 .clipToBounds()
         ) {
             CategorizedAlbumsView(
-                appAlbums = if (isTabbedView && selectedTab == 1) null else albums,
-                systemBuckets = if (isTabbedView && selectedTab == 0) null else systemBuckets,
+                appAlbums = albums,
+                systemBuckets = null,  // 简化：只显示 App 图集
                 allImages = allImages,
                 onAppAlbumClick = onAlbumClick,
                 onSystemBucketClick = onSystemBucketClick,
@@ -980,10 +931,10 @@ private fun AlbumsGridContent(
                 textColor = textColor,
                 secondaryTextColor = secondaryTextColor,
                 isDarkTheme = isDarkTheme,
-                hideHeaders = isTabbedView,
-                listState = blurListState,  // 使用独立的 listState，固定在顶部
+                hideHeaders = true,  // 只有 App 图集，不需要分类标题
+                listState = blurListState,
                 topPadding = contentTopPadding,
-                headerContent = null,  // 模糊层不显示 Tab 切换器
+                headerContent = null,
                 userScrollEnabled = false,
                 modifier = Modifier
                     .fillMaxSize()
@@ -994,8 +945,8 @@ private fun AlbumsGridContent(
 
         // 2. Content area (base)
         CategorizedAlbumsView(
-            appAlbums = if (isTabbedView && selectedTab == 1) null else albums,
-            systemBuckets = if (isTabbedView && selectedTab == 0) null else systemBuckets,
+            appAlbums = albums,
+            systemBuckets = null,  // 简化：只显示 App 图集
             allImages = allImages,
             onAppAlbumClick = onAlbumClick,
             onSystemBucketClick = onSystemBucketClick,
@@ -1003,10 +954,10 @@ private fun AlbumsGridContent(
             textColor = textColor,
             secondaryTextColor = secondaryTextColor,
             isDarkTheme = isDarkTheme,
-            hideHeaders = isTabbedView,
+            hideHeaders = true,  // 只有 App 图集，不需要分类标题
             listState = listState,
             topPadding = contentTopPadding,
-            headerContent = tabSwitcher,
+            headerContent = null,
             userScrollEnabled = true
         )
 
@@ -1063,52 +1014,21 @@ private fun AlbumsGridContent(
                         modifier = Modifier.align(Alignment.CenterStart)
                     )
                     
-                    // 右侧图标按钮组 - 使用统一的ActionIconButton样式
+                    // 右侧设置按钮 - 简化后只保留设置
                     val buttonBgColor = if (isDarkTheme) TabulaColors.CatBlackLight else Color.White
                     val buttonIconColor = if (isDarkTheme) Color.White else TabulaColors.CatBlack
                     
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // 切换视图按钮
-                        ActionIconButton(
-                            icon = if (isTabbedView) Icons.Rounded.ViewModule else Icons.Rounded.ViewList,
-                            contentDescription = "切换视图",
-                            onClick = {
-                                com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                                isTabbedView = !isTabbedView
-                            },
-                            backgroundColor = buttonBgColor,
-                            iconColor = buttonIconColor
-                        )
-                        
-                        // 同步按钮
-                        ActionIconButton(
-                            icon = Icons.Outlined.Sync,
-                            contentDescription = "同步到相册",
-                            onClick = {
-                                com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                                onSyncClick()
-                            },
-                            backgroundColor = buttonBgColor,
-                            iconColor = buttonIconColor
-                        )
-                        
-                        // 设置按钮
-                        ActionIconButton(
-                            icon = Icons.Outlined.Settings,
-                            contentDescription = "设置",
-                            onClick = {
-                                com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                                onSettingsClick()
-                            },
-                            backgroundColor = buttonBgColor,
-                            iconColor = buttonIconColor
-                        )
-                    }
+                    ActionIconButton(
+                        icon = Icons.Outlined.Settings,
+                        contentDescription = "设置",
+                        onClick = {
+                            com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                            onSettingsClick()
+                        },
+                        backgroundColor = buttonBgColor,
+                        iconColor = buttonIconColor,
+                        modifier = Modifier.align(Alignment.CenterEnd)
+                    )
                 }
             }
         }

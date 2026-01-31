@@ -114,15 +114,15 @@ fun CategorizedAlbumsView(
                     )
                 }
             } else if (hideHeaders) {
-                // Tabbed视图下使用网格布局（一行两个）
-                val chunkedAlbums = appAlbums.chunked(2)
+                // 简化后使用 3 列网格布局
+                val chunkedAlbums = appAlbums.chunked(3)
                 items(chunkedAlbums.size) { rowIndex ->
                     val rowAlbums = chunkedAlbums[rowIndex]
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         rowAlbums.forEach { album ->
                             val coverImage = album.coverImageId?.let { imageMap[it] }
@@ -136,8 +136,8 @@ fun CategorizedAlbumsView(
                                 modifier = Modifier.weight(1f)
                             )
                         }
-                        // 如果只有一个元素，添加空占位
-                        if (rowAlbums.size == 1) {
+                        // 填充空位以保持布局对齐
+                        repeat(3 - rowAlbums.size) {
                             Spacer(modifier = Modifier.weight(1f))
                         }
                     }
@@ -345,7 +345,7 @@ private fun AppAlbumCard(
 }
 
 /**
- * App图集卡片（网格布局版，一行两个）
+ * App图集卡片（网格布局版，一行三个）
  */
 @Composable
 private fun AppAlbumGridCard(
@@ -372,7 +372,7 @@ private fun AppAlbumGridCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .clip(RoundedCornerShape(16.dp))
+                .clip(RoundedCornerShape(12.dp))  // 3列布局圆角稍小
                 .background(if (isDarkTheme) Color(0xFF1C1C1E) else Color.White)
         ) {
             if (coverImage != null) {
@@ -399,13 +399,13 @@ private fun AppAlbumGridCard(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
-        // 名称
+        // 名称 - 3列布局字体稍小
         Text(
             text = album.name,
             color = textColor,
-            fontSize = 15.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -416,7 +416,7 @@ private fun AppAlbumGridCard(
         Text(
             text = "${album.imageCount} 张",
             color = secondaryTextColor,
-            fontSize = 13.sp
+            fontSize = 11.sp
         )
     }
 }

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -70,6 +71,7 @@ import java.util.concurrent.TimeUnit
  * @param totalMarked 标记删除的数量
  * @param onContinue 再来一组
  * @param onViewMarked 查看标记（回收站）
+ * @param isLoading 是否正在加载下一组（显示加载状态）
  */
 @Composable
 fun BatchCompletionScreen(
@@ -77,6 +79,7 @@ fun BatchCompletionScreen(
     totalMarked: Int,
     onContinue: () -> Unit,
     onViewMarked: () -> Unit,
+    isLoading: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -285,23 +288,42 @@ fun BatchCompletionScreen(
                 // 再来一组按钮
                 Button(
                     onClick = {
-                        HapticFeedback.mediumTap(context)
-                        onContinue()
+                        if (!isLoading) {
+                            HapticFeedback.mediumTap(context)
+                            onContinue()
+                        }
                     },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(56.dp),
+                    enabled = !isLoading,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = primaryButtonColor,
-                        contentColor = primaryButtonTextColor
+                        contentColor = primaryButtonTextColor,
+                        disabledContainerColor = primaryButtonColor.copy(alpha = 0.6f),
+                        disabledContentColor = primaryButtonTextColor.copy(alpha = 0.6f)
                     ),
                     shape = RoundedCornerShape(16.dp)
                 ) {
-                    Text(
-                        text = "再来一组",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = primaryButtonTextColor,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "正在分析相似照片...",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    } else {
+                        Text(
+                            text = "再来一组",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))

@@ -78,6 +78,7 @@ import com.tabula.v3.ui.theme.TabulaColors
 import com.tabula.v3.ui.util.HapticFeedback
 import com.tabula.v3.ui.theme.TabulaTheme
 import com.tabula.v3.ui.components.LocalLiquidGlassEnabled
+import com.tabula.v3.ui.components.OnboardingDialog
 import com.tabula.v3.service.FluidCloudService
 import android.widget.Toast
 import com.tabula.v3.ui.components.isBackdropLiquidGlassSupported
@@ -234,6 +235,9 @@ fun TabulaApp(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    // ========== 引导弹窗状态 ==========
+    var showOnboarding by remember { mutableStateOf(!preferences.hasCompletedOnboarding) }
+
     // ========== 设置 ==========
     var currentBatchSize by remember { mutableIntStateOf(preferences.batchSize) }
     var currentTopBarMode by remember { mutableStateOf(preferences.topBarDisplayMode) }
@@ -382,6 +386,9 @@ fun TabulaApp(
                 preferences.totalReviewedCount++
                 preferences.totalDeletedCount++
                 
+                // 清除相似组缓存（图片列表已变化）
+                recommendationEngine.invalidateSimilarGroupCache()
+                
                 scope.launch {
                     recycleBinManager.addToRecycleBin(image)
                 }
@@ -407,6 +414,14 @@ fun TabulaApp(
             onCreateAlbum = { name, color, emoji ->
                 scope.launch {
                     albumManager.createAlbum(name, color, emoji)
+                }
+            },
+            onCreateAlbumAndClassify = { name, color, emoji, image ->
+                scope.launch {
+                    // 1. 创建图集
+                    val newAlbum = albumManager.createAlbum(name, color, emoji)
+                    // 2. 将图片归档到新图集
+                    albumManager.addImageToAlbum(image.id, image.uri.toString(), newAlbum.id)
                 }
             },
             onUndoAlbumAction = {
@@ -729,12 +744,6 @@ fun TabulaApp(
             onDeleteAlbum = { albumId ->
                 scope.launch { albumManager.deleteAlbum(albumId) }
             },
-            onToggleSync = { albumId, enabled ->
-                scope.launch { albumManager.toggleSyncEnabled(albumId, enabled) }
-            },
-            onChangeSyncMode = { albumId, mode ->
-                scope.launch { albumManager.changeSyncMode(albumId, mode) }
-            },
             onNavigateBack = { currentScreen = AppScreen.DECK },
             initialAlbumId = selectedAlbumId,
             showHdrBadges = showHdrBadges,
@@ -746,6 +755,11 @@ fun TabulaApp(
                     selectedAlbumId?.let { currentAlbumId ->
                         albumManager.moveImagesToAlbum(imageIds, currentAlbumId, targetAlbumId)
                     }
+                }
+            },
+            onCopyToAlbum = { imageIds, targetAlbumId ->
+                scope.launch {
+                    albumManager.copyImagesToAlbum(imageIds, targetAlbumId)
                 }
             }
         )
@@ -810,6 +824,19 @@ fun TabulaApp(
         backgroundContent = backgroundContent,
         foregroundContent = foregroundContent ?: {}
     )
+    
+    // ========== 引导弹窗 ==========
+    if (showOnboarding) {
+        OnboardingDialog(
+            onDismiss = {
+                showOnboarding = false
+            },
+            onComplete = {
+                preferences.hasCompletedOnboarding = true
+                showOnboarding = false
+            }
+        )
+    }
 }
 
 /**
