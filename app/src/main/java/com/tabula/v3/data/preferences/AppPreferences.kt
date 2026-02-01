@@ -133,8 +133,8 @@ class AppPreferences(context: Context) {
      */
     var topBarDisplayMode: TopBarDisplayMode
         get() {
-            val value = prefs.getString(KEY_TOP_BAR_MODE, TopBarDisplayMode.INDEX.name)
-            return TopBarDisplayMode.valueOf(value ?: TopBarDisplayMode.INDEX.name)
+            val value = prefs.getString(KEY_TOP_BAR_MODE, TopBarDisplayMode.DATE.name)
+            return TopBarDisplayMode.valueOf(value ?: TopBarDisplayMode.DATE.name)
         }
         set(value) {
             prefs.edit().putString(KEY_TOP_BAR_MODE, value.name).apply()

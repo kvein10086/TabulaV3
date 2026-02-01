@@ -59,11 +59,52 @@ import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.util.HapticFeedback
 
 /**
+ * 图集名称验证规则
+ * 不允许的特殊字符（与系统相册命名规则一致）
+ */
+private val INVALID_ALBUM_NAME_CHARS = Regex("[\\\\/:*?\"<>|]")
+
+/**
+ * 验证图集名称
+ * @return 错误信息，如果有效则返回 null
+ */
+private fun validateAlbumName(
+    name: String,
+    existingNames: List<String>,
+    isEdit: Boolean,
+    initialName: String
+): String? {
+    val trimmedName = name.trim()
+    
+    // 检查空名称
+    if (trimmedName.isBlank()) {
+        return "图集名称不能为空"
+    }
+    
+    // 检查特殊字符
+    if (INVALID_ALBUM_NAME_CHARS.containsMatchIn(trimmedName)) {
+        return "名称不能包含特殊字符 \\ / : * ? \" < > |"
+    }
+    
+    // 检查重复名称（编辑模式下允许保持原名称）
+    val isDuplicate = existingNames.any { existing ->
+        existing.equals(trimmedName, ignoreCase = true) &&
+            !(isEdit && existing.equals(initialName, ignoreCase = true))
+    }
+    if (isDuplicate) {
+        return "已存在同名图集"
+    }
+    
+    return null
+}
+
+/**
  * 图集创建/编辑对话框
  *
  * 支持：
  * - 输入图集名称
  * - 实时预览标签样式（使用内置 Glassmorphism 效果）
+ * - 名称验证（不允许重复、不允许特殊字符）
  *
  * 设计风格：iOS 风格的圆角卡片对话框
  */
@@ -75,6 +116,7 @@ fun AlbumEditDialog(
     initialColor: Long? = null,
     initialTextColor: Long? = null,
     initialEmoji: String? = null,
+    existingAlbumNames: List<String> = emptyList(),
     onConfirm: (name: String, color: Long?, emoji: String?) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -83,6 +125,12 @@ fun AlbumEditDialog(
 
     // 状态
     var name by remember { mutableStateOf(initialName) }
+    
+    // 名称验证
+    val validationError = remember(name) {
+        validateAlbumName(name, existingAlbumNames, isEdit, initialName)
+    }
+    val isNameValid = validationError == null && name.isNotBlank()
 
     // 颜色
     val backgroundColor = if (isDarkTheme) Color(0xFF2C2C2E) else Color.White
@@ -90,6 +138,7 @@ fun AlbumEditDialog(
     val secondaryColor = if (isDarkTheme) Color(0xFF8E8E93) else Color(0xFF8E8E93)
     val inputBgColor = if (isDarkTheme) Color(0xFF3A3A3C) else Color(0xFFF2F2F7)
     val accentColor = Color(0xFF007AFF) // iOS 蓝
+    val errorColor = Color(0xFFFF3B30) // iOS 红
 
     val focusRequester = remember { FocusRequester() }
 
@@ -153,18 +202,18 @@ fun AlbumEditDialog(
 
                     IconButton(
                         onClick = {
-                            if (name.isNotBlank()) {
+                            if (isNameValid) {
                                 HapticFeedback.mediumTap(context)
                                 onConfirm(name.trim(), null, null)
                             }
                         },
                         modifier = Modifier.size(40.dp),
-                        enabled = name.isNotBlank()
+                        enabled = isNameValid
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Check,
                             contentDescription = "确认",
-                            tint = if (name.isNotBlank()) accentColor else secondaryColor.copy(alpha = 0.5f)
+                            tint = if (isNameValid) accentColor else secondaryColor.copy(alpha = 0.5f)
                         )
                     }
                 }
@@ -275,14 +324,24 @@ fun AlbumEditDialog(
                 
                 Spacer(modifier = Modifier.height(8.dp))
                 
-                // 提示文字
-                Text(
-                    text = "标签将使用统一的玻璃拟态风格显示",
-                    color = secondaryColor.copy(alpha = 0.7f),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Normal,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
+                // 错误提示 或 普通提示
+                if (validationError != null && name.isNotBlank()) {
+                    Text(
+                        text = validationError,
+                        color = errorColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                } else {
+                    Text(
+                        text = "标签将使用统一的玻璃拟态风格显示",
+                        color = secondaryColor.copy(alpha = 0.7f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Normal,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
             }
         }
     }

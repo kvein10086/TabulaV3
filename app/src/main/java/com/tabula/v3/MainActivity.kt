@@ -699,6 +699,22 @@ fun TabulaApp(
             },
             liquidGlassLabEnabled = liquidGlassLabEnabled,
             onLiquidGlassLabEnabledChange = onLiquidGlassLabEnabledChange,
+            // 标签收纳设置
+            tagSelectionMode = tagSelectionMode,
+            tagSwitchSpeed = tagSwitchSpeed,
+            tagsPerRow = tagsPerRow,
+            onTagSelectionModeChange = { mode ->
+                tagSelectionMode = mode
+                preferences.tagSelectionMode = mode
+            },
+            onTagSwitchSpeedChange = { speed ->
+                tagSwitchSpeed = speed
+                preferences.tagSwitchSpeed = speed
+            },
+            onTagsPerRowChange = { count ->
+                tagsPerRow = count
+                preferences.tagsPerRow = count
+            },
             onNavigateBack = { currentScreen = AppScreen.SETTINGS }
         )
     }

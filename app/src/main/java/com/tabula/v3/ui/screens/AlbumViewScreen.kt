@@ -225,6 +225,7 @@ fun AlbumViewScreen(
             initialName = album.name,
             initialColor = album.color,
             initialEmoji = album.emoji,
+            existingAlbumNames = albums.map { it.name },
             onConfirm = { name, color, emoji ->
                 onUpdateAlbum(album.copy(name = name, color = color, emoji = emoji))
                 editingAlbum = null

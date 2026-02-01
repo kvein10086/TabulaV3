@@ -933,73 +933,6 @@ fun ImageDisplayScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // ========== 标签收纳样式 ==========
-            SectionHeader("标签收纳", textColor)
-            SettingsGroup(cardColor) {
-                CardStyleOptionItem(
-                    title = "下滑自动选择",
-                    description = "下滑卡片时标签自动切换，松手归类",
-                    isSelected = tagSelectionMode == TagSelectionMode.SWIPE_AUTO,
-                    textColor = textColor,
-                    secondaryTextColor = secondaryTextColor,
-                    onClick = {
-                        HapticFeedback.lightTap(context)
-                        onTagSelectionModeChange(TagSelectionMode.SWIPE_AUTO)
-                    }
-                )
-                
-                Divider(isDarkTheme)
-                
-                CardStyleOptionItem(
-                    title = "固定标签点击",
-                    description = "标签固定显示在底部，点击即可归类",
-                    isSelected = tagSelectionMode == TagSelectionMode.FIXED_TAP,
-                    textColor = textColor,
-                    secondaryTextColor = secondaryTextColor,
-                    onClick = {
-                        HapticFeedback.lightTap(context)
-                        onTagSelectionModeChange(TagSelectionMode.FIXED_TAP)
-                    }
-                )
-            }
-            
-            // 下滑自动选择模式的详细设置
-            if (tagSelectionMode == TagSelectionMode.SWIPE_AUTO) {
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                SettingsGroup(cardColor) {
-                    // 切换速度滑块
-                    TagSettingSliderItem(
-                        title = "切换速度",
-                        description = "数值越大，滑动时标签切换越灵敏",
-                        value = tagSwitchSpeed,
-                        valueRange = 0.5f..2.0f,
-                        steps = 5,
-                        valueText = String.format("%.1fx", tagSwitchSpeed),
-                        textColor = textColor,
-                        secondaryTextColor = secondaryTextColor,
-                        onValueChange = onTagSwitchSpeedChange
-                    )
-                    
-                    Divider(isDarkTheme)
-                    
-                    // 每行标签数滑块
-                    TagSettingSliderItem(
-                        title = "每行标签数",
-                        description = "下滑归类时每行显示的标签数量",
-                        value = tagsPerRow.toFloat(),
-                        valueRange = 4f..10f,
-                        steps = 5,
-                        valueText = "${tagsPerRow}个",
-                        textColor = textColor,
-                        secondaryTextColor = secondaryTextColor,
-                        onValueChange = { onTagsPerRowChange(it.roundToInt()) }
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
             SectionHeader("标识显示", textColor)
             SettingsGroup(cardColor) {
                 SettingsSwitchItem(
@@ -1137,6 +1070,13 @@ fun LabScreen(
     onFluidCloudEnabledChange: (Boolean) -> Unit,
     liquidGlassLabEnabled: Boolean = false,
     onLiquidGlassLabEnabledChange: (Boolean) -> Unit = {},
+    // 标签收纳设置
+    tagSelectionMode: TagSelectionMode = TagSelectionMode.SWIPE_AUTO,
+    tagSwitchSpeed: Float = 1.0f,
+    tagsPerRow: Int = AppPreferences.DEFAULT_TAGS_PER_ROW,
+    onTagSelectionModeChange: (TagSelectionMode) -> Unit = {},
+    onTagSwitchSpeedChange: (Float) -> Unit = {},
+    onTagsPerRowChange: (Int) -> Unit = {},
     onNavigateBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1265,6 +1205,73 @@ fun LabScreen(
                         text = "退出应用时在状态栏显示剩余照片数量（模拟流体云效果）",
                         style = MaterialTheme.typography.bodySmall,
                         color = secondaryTextColor.copy(alpha = 0.7f)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(28.dp))
+
+            // ========== 标签收纳样式 ==========
+            SectionHeader("标签收纳", textColor)
+            SettingsGroup(cardColor) {
+                CardStyleOptionItem(
+                    title = "下滑自动选择",
+                    description = "下滑卡片时标签自动切换，松手归类",
+                    isSelected = tagSelectionMode == TagSelectionMode.SWIPE_AUTO,
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor,
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        onTagSelectionModeChange(TagSelectionMode.SWIPE_AUTO)
+                    }
+                )
+                
+                Divider(isDarkTheme)
+                
+                CardStyleOptionItem(
+                    title = "固定标签点击",
+                    description = "标签固定显示在底部，点击即可归类",
+                    isSelected = tagSelectionMode == TagSelectionMode.FIXED_TAP,
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor,
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        onTagSelectionModeChange(TagSelectionMode.FIXED_TAP)
+                    }
+                )
+            }
+            
+            // 下滑自动选择模式的详细设置
+            if (tagSelectionMode == TagSelectionMode.SWIPE_AUTO) {
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                SettingsGroup(cardColor) {
+                    // 切换速度滑块
+                    TagSettingSliderItem(
+                        title = "切换速度",
+                        description = "数值越大，滑动时标签切换越灵敏",
+                        value = tagSwitchSpeed,
+                        valueRange = 0.5f..2.0f,
+                        steps = 5,
+                        valueText = String.format("%.1fx", tagSwitchSpeed),
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor,
+                        onValueChange = onTagSwitchSpeedChange
+                    )
+                    
+                    Divider(isDarkTheme)
+                    
+                    // 每行标签数滑块
+                    TagSettingSliderItem(
+                        title = "每行标签数",
+                        description = "下滑归类时每行显示的标签数量",
+                        value = tagsPerRow.toFloat(),
+                        valueRange = 4f..10f,
+                        steps = 5,
+                        valueText = "${tagsPerRow}个",
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor,
+                        onValueChange = { onTagsPerRowChange(it.roundToInt()) }
                     )
                 }
             }

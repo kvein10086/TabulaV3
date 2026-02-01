@@ -580,6 +580,7 @@ fun DeckScreen(
     if (showCreateAlbumDialog) {
         AlbumEditDialog(
             isEdit = false,
+            existingAlbumNames = albums.map { it.name },
             onConfirm = { name, color, emoji ->
                 val pending = pendingClassifyImage
                 if (pending != null) {
@@ -1174,6 +1175,7 @@ private fun AlbumsGridContent(
     // 新建图集对话框
     if (showCreateDialog) {
         AlbumEditDialog(
+            existingAlbumNames = albums.map { it.name },
             onDismiss = { showCreateDialog = false },
             onConfirm = { name, color, emoji ->
                 onCreateAlbum(name, color, emoji)
