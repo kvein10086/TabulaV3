@@ -118,14 +118,14 @@ class MainActivity : ComponentActivity() {
     private var onDeletePermissionResult: ((Boolean) -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 使用完全透明的导航栏样式，避免底部小白条区域有背景色
+        // 使用完全透明的导航栏样式，实现沉浸式体验
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(
                 lightScrim = AndroidColor.TRANSPARENT,
                 darkScrim = AndroidColor.TRANSPARENT
             ),
-            navigationBarStyle = SystemBarStyle.light(
-                scrim = AndroidColor.TRANSPARENT,
+            navigationBarStyle = SystemBarStyle.auto(
+                lightScrim = AndroidColor.TRANSPARENT,
                 darkScrim = AndroidColor.TRANSPARENT
             )
         )

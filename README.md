@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Platform-Android-green?style=flat-square" alt="Platform">
-  <img src="https://img.shields.io/badge/Version-3.2.0-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/Version-3.2.1-blue?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/API-34%2B-orange?style=flat-square" alt="Min SDK">
 </p>
 
@@ -76,9 +76,9 @@
 
 我们深知照片是您最私密的数据。
 **Tabula 承诺：**
-1. :no_entry_sign: **不申请互联网权限**。
-2. 🙈 **不收集任何用户行为数据**。
-3. :mobile_phone_off: **所有图片读取、分析与处理均在您的手机本地完成**。
+1. 🙈 **不收集任何用户行为数据**。
+2. :mobile_phone_off: **所有图片读取、分析与处理均在您的手机本地完成**。
+3. 🔒 **网络权限仅用于应用更新检查**，绝不上传任何照片或个人信息。
 
 ---
 

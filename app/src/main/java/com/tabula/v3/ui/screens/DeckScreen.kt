@@ -964,9 +964,9 @@ private fun EmptyState() {
 
 
 /**
- * TODO
+ * 图集网格内容
  * 
- * TODO
+ * 显示用户创建的图集列表，支持毛玻璃导航栏效果。
  */
 @Composable
 private fun AlbumsGridContent(
@@ -997,17 +997,17 @@ private fun AlbumsGridContent(
     val blurListState = rememberLazyListState()
     var topBarHeight by remember { mutableStateOf(0.dp) }
     
-    // TODO
+    // 滚动折叠阈值
     val collapseThreshold = 40.dp
     val density = LocalDensity.current
     val collapseThresholdPx = with(density) { collapseThreshold.toPx() }
     val blurRadius = 40.dp  // 增加模糊半径，实现更柔和的毛玻璃效果
     
-    // TODO
+    // 计算滚动偏移量（用于导航栏折叠动画）
     val scrollOffset by remember {
         derivedStateOf {
             if (listState.firstVisibleItemIndex > 0) {
-                collapseThresholdPx // TODO
+                collapseThresholdPx // 超过第一项时完全折叠
             } else {
                 listState.firstVisibleItemScrollOffset.toFloat().coerceAtMost(collapseThresholdPx)
             }
@@ -1171,7 +1171,7 @@ private fun AlbumsGridContent(
         }
     }
 
-    // TODO
+    // 新建图集对话框
     if (showCreateDialog) {
         AlbumEditDialog(
             onDismiss = { showCreateDialog = false },

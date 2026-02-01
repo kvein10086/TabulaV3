@@ -29,10 +29,10 @@ import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.util.HapticFeedback
 
 /**
-// TODO
+ * 模式切换器组件
  * 
-// TODO
-// TODO
+ * 用于在照片浏览模式和图集管理模式之间切换的胶囊形切换按钮。
+ * 采用 iOS 风格的分段控件设计。
  */
 @Composable
 fun ModeToggle(
