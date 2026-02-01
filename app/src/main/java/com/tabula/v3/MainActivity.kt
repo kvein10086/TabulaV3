@@ -32,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,6 +53,7 @@ import com.tabula.v3.data.model.ImageFile
 import com.tabula.v3.data.preferences.AppPreferences
 import com.tabula.v3.data.preferences.CardStyleMode
 import com.tabula.v3.data.preferences.SwipeStyle
+import com.tabula.v3.data.preferences.TagSelectionMode
 import com.tabula.v3.data.preferences.ThemeMode
 import com.tabula.v3.data.preferences.TopBarDisplayMode
 import com.tabula.v3.data.repository.FileOperationManager
@@ -246,12 +248,21 @@ fun TabulaApp(
     var showMotionBadges by remember { mutableStateOf(preferences.showMotionBadges) }
     var cardStyleMode by remember { mutableStateOf(preferences.cardStyleMode) }
     var swipeStyle by remember { mutableStateOf(preferences.swipeStyle) }
+    // 标签收纳设置
+    var tagSelectionMode by remember { mutableStateOf(preferences.tagSelectionMode) }
+    var tagSwitchSpeed by remember { mutableFloatStateOf(preferences.tagSwitchSpeed) }
+    var tagsPerRow by remember { mutableIntStateOf(preferences.tagsPerRow) }
     var playMotionSound by remember { mutableStateOf(preferences.playMotionSound) }
     var motionSoundVolume by remember { mutableIntStateOf(preferences.motionSoundVolume) }
     var hapticEnabled by remember { mutableStateOf(preferences.hapticEnabled) }
     var hapticStrength by remember { mutableIntStateOf(preferences.hapticStrength) }
     var swipeHapticsEnabled by remember { mutableStateOf(preferences.swipeHapticsEnabled) }
     var fluidCloudEnabled by remember { mutableStateOf(preferences.fluidCloudEnabled) }
+    
+    // ========== 快捷操作按钮状态 ==========
+    var quickActionEnabled by remember { mutableStateOf(preferences.quickActionButtonEnabled) }
+    var quickActionButtonX by remember { mutableFloatStateOf(preferences.quickActionButtonX) }
+    var quickActionButtonY by remember { mutableFloatStateOf(preferences.quickActionButtonY) }
 
     // ========== 路由状态 ==========
     var currentScreen by remember { mutableStateOf(AppScreen.DECK) }
@@ -497,11 +508,24 @@ fun TabulaApp(
             enableSwipeHaptics = swipeHapticsEnabled,
             isAdaptiveCardStyle = cardStyleMode == CardStyleMode.ADAPTIVE,
             swipeStyle = swipeStyle,
+            tagSelectionMode = tagSelectionMode,
+            tagsPerRow = tagsPerRow,
+            tagSwitchSpeed = tagSwitchSpeed,
             isAlbumMode = isAlbumMode,
             onModeChange = { isAlbumMode = it },
             onBatchRemainingChange = { remaining ->
                 // 更新流体云的批次剩余数量
                 (context as? MainActivity)?.updateBatchRemaining(remaining, fluidCloudEnabled)
+            },
+            // 快捷操作按钮
+            quickActionEnabled = quickActionEnabled,
+            leftHandButtonX = quickActionButtonX,
+            leftHandButtonY = quickActionButtonY,
+            onQuickActionPositionChanged = { _, x, y ->
+                quickActionButtonX = x
+                quickActionButtonY = y
+                preferences.quickActionButtonX = x
+                preferences.quickActionButtonY = y
             }
         )
     }
@@ -705,6 +729,33 @@ fun TabulaApp(
             onSwipeStyleChange = { style ->
                 swipeStyle = style
                 preferences.swipeStyle = style
+            },
+            // 标签收纳设置
+            tagSelectionMode = tagSelectionMode,
+            tagSwitchSpeed = tagSwitchSpeed,
+            tagsPerRow = tagsPerRow,
+            onTagSelectionModeChange = { mode ->
+                tagSelectionMode = mode
+                preferences.tagSelectionMode = mode
+            },
+            onTagSwitchSpeedChange = { speed ->
+                tagSwitchSpeed = speed
+                preferences.tagSwitchSpeed = speed
+            },
+            onTagsPerRowChange = { count ->
+                tagsPerRow = count
+                preferences.tagsPerRow = count
+            },
+            // 快捷操作按钮
+            quickActionEnabled = quickActionEnabled,
+            onQuickActionEnabledChange = { enabled ->
+                quickActionEnabled = enabled
+                preferences.quickActionButtonEnabled = enabled
+            },
+            onResetButtonPosition = {
+                preferences.resetQuickActionButtonPosition()
+                quickActionButtonX = preferences.quickActionButtonX
+                quickActionButtonY = preferences.quickActionButtonY
             },
             onNavigateBack = { currentScreen = AppScreen.SETTINGS }
         )

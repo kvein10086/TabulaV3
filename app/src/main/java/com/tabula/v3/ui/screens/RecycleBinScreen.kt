@@ -661,6 +661,8 @@ private fun FullScreenViewer(
     var isHdrComparePressed by remember { mutableStateOf(false) }
     var isLivePressed by remember { mutableStateOf(false) }
     var isPressing by remember { mutableStateOf(false) }
+    // 记录是否刚刚完成了长按操作（用于 HDR/Live 预览），防止释放时误触发退出
+    var wasLongPressing by remember { mutableStateOf(false) }
     val pressDelayMs = 80L
 
     LaunchedEffect(isPressing, isHdr, currentMotionInfo) {
@@ -757,6 +759,11 @@ private fun FullScreenViewer(
                             detectTapGestures(
                                 onTap = {
                                     // 单击退出（未放大时）
+                                    // 如果刚刚完成了长按操作（HDR/Live 预览），不触发退出
+                                    if (wasLongPressing) {
+                                        wasLongPressing = false
+                                        return@detectTapGestures
+                                    }
                                     if (zoomScale <= 1.2f) {
                                         onDismiss()
                                     }
@@ -764,6 +771,10 @@ private fun FullScreenViewer(
                                 onPress = {
                                     isPressing = true
                                     tryAwaitRelease()
+                                    // 检查是否触发过 HDR/Live 播放，如果是则标记为长按操作
+                                    if (isHdrComparePressed || isLivePressed) {
+                                        wasLongPressing = true
+                                    }
                                     isPressing = false
                                 },
                                 onDoubleTap = { tapOffset ->

@@ -45,7 +45,10 @@ import androidx.compose.material.icons.outlined.TextFormat
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.Vibration
 import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.PanTool
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Science
+import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.Widgets
 import android.appwidget.AppWidgetManager
 import android.content.ComponentName
@@ -93,6 +96,7 @@ import com.tabula.v3.data.preferences.AppPreferences
 import com.tabula.v3.data.preferences.CardStyleMode
 import com.tabula.v3.data.preferences.RecommendMode
 import com.tabula.v3.data.preferences.SwipeStyle
+import com.tabula.v3.data.preferences.TagSelectionMode
 import com.tabula.v3.data.preferences.ThemeMode
 import com.tabula.v3.data.preferences.TopBarDisplayMode
 import com.tabula.v3.ui.components.GlassBottomSheet
@@ -800,6 +804,17 @@ fun ImageDisplayScreen(
     onShowMotionBadgesChange: (Boolean) -> Unit,
     onCardStyleModeChange: (CardStyleMode) -> Unit,
     onSwipeStyleChange: (SwipeStyle) -> Unit,
+    // 标签收纳设置
+    tagSelectionMode: TagSelectionMode = TagSelectionMode.SWIPE_AUTO,
+    tagSwitchSpeed: Float = 1.0f,
+    tagsPerRow: Int = AppPreferences.DEFAULT_TAGS_PER_ROW,
+    onTagSelectionModeChange: (TagSelectionMode) -> Unit = {},
+    onTagSwitchSpeedChange: (Float) -> Unit = {},
+    onTagsPerRowChange: (Int) -> Unit = {},
+    // 快捷操作按钮
+    quickActionEnabled: Boolean = false,
+    onQuickActionEnabledChange: (Boolean) -> Unit = {},
+    onResetButtonPosition: () -> Unit = {},
     onNavigateBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -890,7 +905,7 @@ fun ImageDisplayScreen(
             SectionHeader("切换样式", textColor)
             SettingsGroup(cardColor) {
                 CardStyleOptionItem(
-                    title = "切牌样式",
+                    title = "流转模式",
                     description = "左右滑动循环切换，卡片插入底部",
                     isSelected = swipeStyle == SwipeStyle.SHUFFLE,
                     textColor = textColor,
@@ -904,7 +919,7 @@ fun ImageDisplayScreen(
                 Divider(isDarkTheme)
                 
                 CardStyleOptionItem(
-                    title = "摸牌样式",
+                    title = "轻掠模式",
                     description = "右滑发牌飞出，左滑收牌飞回",
                     isSelected = swipeStyle == SwipeStyle.DRAW,
                     textColor = textColor,
@@ -914,6 +929,73 @@ fun ImageDisplayScreen(
                         onSwipeStyleChange(SwipeStyle.DRAW)
                     }
                 )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // ========== 标签收纳样式 ==========
+            SectionHeader("标签收纳", textColor)
+            SettingsGroup(cardColor) {
+                CardStyleOptionItem(
+                    title = "下滑自动选择",
+                    description = "下滑卡片时标签自动切换，松手归类",
+                    isSelected = tagSelectionMode == TagSelectionMode.SWIPE_AUTO,
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor,
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        onTagSelectionModeChange(TagSelectionMode.SWIPE_AUTO)
+                    }
+                )
+                
+                Divider(isDarkTheme)
+                
+                CardStyleOptionItem(
+                    title = "固定标签点击",
+                    description = "标签固定显示在底部，点击即可归类",
+                    isSelected = tagSelectionMode == TagSelectionMode.FIXED_TAP,
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor,
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        onTagSelectionModeChange(TagSelectionMode.FIXED_TAP)
+                    }
+                )
+            }
+            
+            // 下滑自动选择模式的详细设置
+            if (tagSelectionMode == TagSelectionMode.SWIPE_AUTO) {
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                SettingsGroup(cardColor) {
+                    // 切换速度滑块
+                    TagSettingSliderItem(
+                        title = "切换速度",
+                        description = "数值越大，滑动时标签切换越灵敏",
+                        value = tagSwitchSpeed,
+                        valueRange = 0.5f..2.0f,
+                        steps = 5,
+                        valueText = String.format("%.1fx", tagSwitchSpeed),
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor,
+                        onValueChange = onTagSwitchSpeedChange
+                    )
+                    
+                    Divider(isDarkTheme)
+                    
+                    // 每行标签数滑块
+                    TagSettingSliderItem(
+                        title = "每行标签数",
+                        description = "下滑归类时每行显示的标签数量",
+                        value = tagsPerRow.toFloat(),
+                        valueRange = 4f..10f,
+                        steps = 5,
+                        valueText = "${tagsPerRow}个",
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor,
+                        onValueChange = { onTagsPerRowChange(it.roundToInt()) }
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -945,6 +1027,53 @@ fun ImageDisplayScreen(
                         onShowMotionBadgesChange(it)
                     }
                 )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // ========== 快捷操作按钮 ==========
+            SectionHeader("快捷操作", textColor)
+            SettingsGroup(cardColor) {
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.TouchApp,
+                    iconTint = Color(0xFF30D158), // Green
+                    title = "快捷操作按钮",
+                    textColor = textColor,
+                    checked = quickActionEnabled,
+                    onCheckedChange = onQuickActionEnabledChange
+                )
+                
+                // 说明
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 12.dp)
+                ) {
+                    Text(
+                        text = "在浏览照片时显示快捷按钮，点击左侧上一张，右侧下一张。长按可拖动调整位置。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor.copy(alpha = 0.7f)
+                    )
+                }
+                
+                if (quickActionEnabled) {
+                    Divider(isDarkTheme)
+                    
+                    SettingsItem(
+                        icon = Icons.Outlined.Refresh,
+                        iconTint = Color(0xFFFF9F0A), // Orange
+                        title = "重置按钮位置",
+                        value = "",
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor,
+                        onClick = {
+                            HapticFeedback.lightTap(context)
+                            onResetButtonPosition()
+                            Toast.makeText(context, "按钮位置已重置", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(28.dp))
@@ -1836,6 +1965,188 @@ fun SettingsSliderItem(
                 }
             }
         )
+    }
+}
+
+/**
+ * 标签设置滑块项 - 支持自定义值范围
+ */
+@Composable
+private fun TagSettingSliderItem(
+    title: String,
+    description: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int,
+    valueText: String,
+    textColor: Color,
+    secondaryTextColor: Color,
+    onValueChange: (Float) -> Unit
+) {
+    val context = LocalContext.current
+    val isDarkTheme = LocalIsDarkTheme.current
+    val accentColor = TabulaColors.EyeGold
+    val inactiveTrackColor = if (isDarkTheme) Color(0xFF3A3A3C) else Color(0xFFE5E5EA)
+    
+    // 记录上一次的值，只有在值真正变化时才触发振动
+    var lastHapticValue by remember { mutableStateOf(value) }
+    
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = textColor
+                )
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = secondaryTextColor.copy(alpha = 0.7f)
+                )
+            }
+            
+            Spacer(modifier = Modifier.width(16.dp))
+            
+            Text(
+                text = valueText,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontWeight = FontWeight.Medium
+                ),
+                color = accentColor
+            )
+        }
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        // 使用自定义滑块
+        RangeStyledSlider(
+            value = value,
+            valueRange = valueRange,
+            steps = steps,
+            activeColor = accentColor,
+            inactiveColor = inactiveTrackColor,
+            onValueChange = { newValue ->
+                // 只有当值真正变化时才触发振动（避免拖动时反复触发）
+                if (newValue != lastHapticValue) {
+                    HapticFeedback.lightTap(context)
+                    lastHapticValue = newValue
+                }
+                onValueChange(newValue)
+            }
+        )
+    }
+}
+
+/**
+ * 支持自定义范围的滑块
+ */
+@Composable
+private fun RangeStyledSlider(
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int,
+    activeColor: Color,
+    inactiveColor: Color,
+    thumbColor: Color = Color.White,
+    onValueChange: (Float) -> Unit,
+    trackHeight: androidx.compose.ui.unit.Dp = 10.dp,
+    thumbSize: androidx.compose.ui.unit.Dp = 20.dp
+) {
+    val density = LocalDensity.current
+    val minValue = valueRange.start
+    val maxValue = valueRange.endInclusive
+    val clampedValue = value.coerceIn(minValue, maxValue)
+    val fraction = if (maxValue > minValue) {
+        ((clampedValue - minValue) / (maxValue - minValue)).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(maxOf(trackHeight, thumbSize))
+    ) {
+        val widthPx = with(density) { maxWidth.toPx() }
+        val thumbPx = with(density) { thumbSize.toPx() }
+        val trackHeightPx = with(density) { trackHeight.toPx() }
+        val trackStartX = thumbPx / 2f
+        val trackEndX = (widthPx - thumbPx / 2f).coerceAtLeast(trackStartX)
+        val trackWidth = (trackEndX - trackStartX).coerceAtLeast(0f)
+        val activeEndX = trackStartX + trackWidth * fraction
+
+        fun updateFromX(x: Float) {
+            val clampedX = x.coerceIn(trackStartX, trackEndX)
+            val newFraction = if (trackWidth <= 0f) 0f else (clampedX - trackStartX) / trackWidth
+            
+            // 计算步进值
+            val stepCount = steps + 1
+            val stepFraction = (newFraction * stepCount).roundToInt().toFloat() / stepCount
+            val newValue = minValue + (maxValue - minValue) * stepFraction.coerceIn(0f, 1f)
+            onValueChange(newValue)
+        }
+
+        androidx.compose.foundation.Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(trackStartX, trackEndX, trackWidth) {
+                    detectTapGestures { offset -> updateFromX(offset.x) }
+                }
+                .pointerInput(trackStartX, trackEndX, trackWidth) {
+                    detectDragGestures { change, _ ->
+                        updateFromX(change.position.x)
+                        change.consume()
+                    }
+                }
+        ) {
+            val y = size.height / 2f
+            val top = y - trackHeightPx / 2f
+            val radius = trackHeightPx / 2f
+
+            // 绘制背景轨道
+            drawRoundRect(
+                color = inactiveColor,
+                topLeft = Offset(trackStartX, top),
+                size = Size(trackWidth, trackHeightPx),
+                cornerRadius = CornerRadius(radius, radius)
+            )
+
+            // 绘制激活轨道
+            if (activeEndX > trackStartX) {
+                drawRoundRect(
+                    color = activeColor,
+                    topLeft = Offset(trackStartX, top),
+                    size = Size(activeEndX - trackStartX, trackHeightPx),
+                    cornerRadius = CornerRadius(radius, radius)
+                )
+            }
+
+            // 绘制拇指
+            val thumbRadius = thumbPx / 2f
+            val thumbCenter = Offset(activeEndX, y)
+
+            // 外圈边框
+            drawCircle(
+                color = activeColor,
+                radius = thumbRadius,
+                center = thumbCenter
+            )
+            // 内部填充
+            drawCircle(
+                color = thumbColor,
+                radius = thumbRadius - with(density) { 2.dp.toPx() },
+                center = thumbCenter
+            )
+        }
     }
 }
 

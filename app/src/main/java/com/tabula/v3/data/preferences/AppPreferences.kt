@@ -215,6 +215,41 @@ class AppPreferences(context: Context) {
             prefs.edit().putString(KEY_SWIPE_STYLE, value.name).apply()
         }
 
+    // ==================== 标签收纳设置 ====================
+
+    /**
+     * 标签选择模式（下滑自动选择 / 固定标签点击）
+     */
+    var tagSelectionMode: TagSelectionMode
+        get() {
+            val value = prefs.getString(KEY_TAG_SELECTION_MODE, TagSelectionMode.SWIPE_AUTO.name)
+            return try {
+                TagSelectionMode.valueOf(value ?: TagSelectionMode.SWIPE_AUTO.name)
+            } catch (e: Exception) {
+                TagSelectionMode.SWIPE_AUTO
+            }
+        }
+        set(value) {
+            prefs.edit().putString(KEY_TAG_SELECTION_MODE, value.name).apply()
+        }
+
+    /**
+     * 标签切换速度（仅下滑自动选择模式生效）
+     * 范围：0.5 ~ 2.0，默认 1.0
+     * 数值越大切换越灵敏
+     */
+    var tagSwitchSpeed: Float
+        get() = prefs.getFloat(KEY_TAG_SWITCH_SPEED, 1.0f)
+        set(value) = prefs.edit().putFloat(KEY_TAG_SWITCH_SPEED, value.coerceIn(0.5f, 2.0f)).apply()
+
+    /**
+     * 每行显示的标签数量（仅下滑自动选择模式生效）
+     * 范围：4 ~ 10，默认 7
+     */
+    var tagsPerRow: Int
+        get() = prefs.getInt(KEY_TAGS_PER_ROW, DEFAULT_TAGS_PER_ROW)
+        set(value) = prefs.edit().putInt(KEY_TAGS_PER_ROW, value.coerceIn(4, 10)).apply()
+
     /**
      * 液态玻璃实验室功能开关（仅在 Android 15+ 生效）
      * 注意：该功能还未完善，暂时强制关闭
@@ -233,6 +268,37 @@ class AppPreferences(context: Context) {
     var hasCompletedOnboarding: Boolean
         get() = prefs.getBoolean(KEY_HAS_COMPLETED_ONBOARDING, false)
         set(value) = prefs.edit().putBoolean(KEY_HAS_COMPLETED_ONBOARDING, value).apply()
+
+    // ==================== 快捷操作按钮设置 ====================
+
+    /**
+     * 快捷操作按钮功能开关
+     */
+    var quickActionButtonEnabled: Boolean
+        get() = prefs.getBoolean(KEY_QUICK_ACTION_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_QUICK_ACTION_ENABLED, value).apply()
+
+    /**
+     * 快捷按钮 X 位置（0-1 百分比）
+     */
+    var quickActionButtonX: Float
+        get() = prefs.getFloat(KEY_QUICK_ACTION_BTN_X, 0.70f)
+        set(value) = prefs.edit().putFloat(KEY_QUICK_ACTION_BTN_X, value.coerceIn(0f, 1f)).apply()
+
+    /**
+     * 快捷按钮 Y 位置（0-1 百分比）
+     */
+    var quickActionButtonY: Float
+        get() = prefs.getFloat(KEY_QUICK_ACTION_BTN_Y, 0.55f)
+        set(value) = prefs.edit().putFloat(KEY_QUICK_ACTION_BTN_Y, value.coerceIn(0f, 1f)).apply()
+
+    /**
+     * 重置快捷按钮位置为默认值
+     */
+    fun resetQuickActionButtonPosition() {
+        quickActionButtonX = 0.70f
+        quickActionButtonY = 0.55f
+    }
 
     // 照片抽取时间戳和冷却天数记录（用于随机漫步模式冷却期逻辑）
     private val pickTimestampsPrefs: SharedPreferences = context.getSharedPreferences(
@@ -455,12 +521,24 @@ class AppPreferences(context: Context) {
         private const val KEY_SWIPE_STYLE = "swipe_style"
         private const val KEY_LIQUID_GLASS_LAB_ENABLED = "liquid_glass_lab_enabled"
         private const val KEY_HAS_COMPLETED_ONBOARDING = "has_completed_onboarding"
+        
+        // 快捷操作按钮相关
+        private const val KEY_QUICK_ACTION_ENABLED = "quick_action_enabled"
+        private const val KEY_QUICK_ACTION_BTN_X = "quick_action_btn_x"
+        private const val KEY_QUICK_ACTION_BTN_Y = "quick_action_btn_y"
+        
+        // 标签收纳相关
+        private const val KEY_TAG_SELECTION_MODE = "tag_selection_mode"
+        private const val KEY_TAG_SWITCH_SPEED = "tag_switch_speed"
+        private const val KEY_TAGS_PER_ROW = "tags_per_row"
 
         private const val PICK_TIMESTAMPS_PREFS_NAME = "tabula_pick_timestamps"
         private const val SIMILAR_GROUPS_PREFS_NAME = "tabula_similar_groups"
 
         const val DEFAULT_BATCH_SIZE = 15
+        const val DEFAULT_TAGS_PER_ROW = 7
         val BATCH_SIZE_OPTIONS = listOf(5, 10, 15, 20, 30, 50)
+        val TAGS_PER_ROW_OPTIONS = listOf(4, 5, 6, 7, 8, 9, 10)
         
         @Volatile
         private var instance: AppPreferences? = null
@@ -525,6 +603,14 @@ enum class CardStyleMode {
 enum class SwipeStyle {
     SHUFFLE,    // 切牌样式 - 左右滑动循环切换，牌插入底部
     DRAW        // 摸牌样式 - 右滑发牌飞出，左滑收牌飞回
+}
+
+/**
+ * 标签选择模式枚举
+ */
+enum class TagSelectionMode {
+    SWIPE_AUTO,    // 下滑自动选择 - 下滑时标签自动切换，松手归类
+    FIXED_TAP      // 固定标签点击 - 标签固定显示，点击即归类
 }
 
 /**

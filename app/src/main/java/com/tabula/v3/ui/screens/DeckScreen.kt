@@ -81,15 +81,18 @@ import com.tabula.v3.R
 import com.tabula.v3.data.model.Album
 import com.tabula.v3.data.model.ImageFile
 import com.tabula.v3.data.preferences.SwipeStyle
+import com.tabula.v3.data.preferences.TagSelectionMode
 import com.tabula.v3.data.preferences.TopBarDisplayMode
 import com.tabula.v3.data.repository.LocalImageRepository
 import androidx.compose.ui.geometry.Offset
 import com.tabula.v3.ui.components.ActionIconButton
 import com.tabula.v3.ui.components.AlbumDropTarget
+import com.tabula.v3.ui.components.TAGS_PER_ROW
 import com.tabula.v3.ui.components.AlbumEditDialog
 import com.tabula.v3.ui.components.BatchCompletionScreen
 import com.tabula.v3.ui.components.CategorizedAlbumsView
 import com.tabula.v3.ui.components.DraggableAlbumsGrid
+import com.tabula.v3.ui.components.FixedTagBar
 import com.tabula.v3.ui.components.AdaptiveGlass
 import com.tabula.v3.ui.components.FrostedGlass
 import com.tabula.v3.ui.components.BackdropLiquidGlassConfig
@@ -104,6 +107,8 @@ import com.tabula.v3.ui.components.LocalLiquidGlassEnabled
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.theme.TabulaColors
 import com.tabula.v3.ui.util.HapticFeedback
+import com.tabula.v3.ui.components.quickaction.QuickActionButton
+import com.tabula.v3.ui.components.quickaction.rememberSafeArea
 import kotlinx.coroutines.launch
 
 /**
@@ -150,6 +155,10 @@ fun DeckScreen(
     enableSwipeHaptics: Boolean = true,
     isAdaptiveCardStyle: Boolean = false,
     swipeStyle: SwipeStyle = SwipeStyle.SHUFFLE,
+    // 标签收纳模式
+    tagSelectionMode: TagSelectionMode = TagSelectionMode.SWIPE_AUTO,
+    tagsPerRow: Int = TAGS_PER_ROW,
+    tagSwitchSpeed: Float = 1.0f,
     // 推荐算法回调
     getRecommendedBatch: suspend (List<ImageFile>, Int) -> List<ImageFile> = { images, size -> 
         images.shuffled().take(size) 
@@ -171,7 +180,12 @@ fun DeckScreen(
     isAlbumMode: Boolean = false,
     onModeChange: (Boolean) -> Unit = {},
     // 流体云：批次剩余数量回调
-    onBatchRemainingChange: (Int) -> Unit = {}
+    onBatchRemainingChange: (Int) -> Unit = {},
+    // 快捷操作按钮
+    quickActionEnabled: Boolean = false,
+    leftHandButtonX: Float = 0.85f,
+    leftHandButtonY: Float = 0.55f,
+    onQuickActionPositionChanged: (isLeftHand: Boolean, x: Float, y: Float) -> Unit = { _, _, _ -> }
 ) {
     val context = LocalContext.current
     val isDarkTheme = LocalIsDarkTheme.current
@@ -207,6 +221,9 @@ fun DeckScreen(
     // 用于异步初始化批次
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var needsInitialBatch by remember { mutableStateOf(true) }
+    
+    // ========== 快捷操作按钮状态 ==========
+    val safeArea = rememberSafeArea()
     
     // 加载下一组的状态（用于显示加载指示器）
     var isLoadingNextBatch by remember { mutableStateOf(false) }
@@ -349,6 +366,9 @@ fun DeckScreen(
                         enableSwipeHaptics = enableSwipeHaptics,
                         isAdaptiveCardStyle = isAdaptiveCardStyle,
                         swipeStyle = swipeStyle,
+                        tagSelectionMode = tagSelectionMode,
+                        tagsPerRow = tagsPerRow,
+                        tagSwitchSpeed = tagSwitchSpeed,
                         albums = albums,
                         currentImageAlbumIds = currentImageAlbumIds,
                         onIndexChange = { newIndex ->
@@ -469,6 +489,36 @@ fun DeckScreen(
             }
         }
 
+        // ========== 快捷操作按钮 ==========
+        QuickActionButton(
+            visible = quickActionEnabled && 
+                !isLoading && 
+                currentBatch.isNotEmpty() && 
+                !isClassifyMode && 
+                !isAlbumMode &&
+                deckState == DeckState.BROWSING &&
+                viewerState == null,
+            hasPrevious = currentIndex > 0,
+            hasNext = currentIndex < currentBatch.lastIndex,
+            positionX = leftHandButtonX,  // 使用统一的位置设置
+            positionY = leftHandButtonY,
+            safeArea = safeArea,
+            onPrevious = {
+                if (currentIndex > 0) {
+                    currentIndex--
+                }
+            },
+            onNext = {
+                if (currentIndex < currentBatch.lastIndex) {
+                    onKeep()
+                    currentIndex++
+                }
+            },
+            onPositionChanged = { x, y ->
+                onQuickActionPositionChanged(true, x, y)
+            }
+        )
+
         // 查看器覆盖层
 
         viewerState?.let { state ->
@@ -580,6 +630,9 @@ private fun DeckContent(
     enableSwipeHaptics: Boolean,
     isAdaptiveCardStyle: Boolean,
     swipeStyle: SwipeStyle,
+    tagSelectionMode: TagSelectionMode = TagSelectionMode.SWIPE_AUTO,
+    tagsPerRow: Int = TAGS_PER_ROW,
+    tagSwitchSpeed: Float = 1.0f,
     albums: List<Album>,
     currentImageAlbumIds: Set<String>,
     onIndexChange: (Int) -> Unit,
@@ -595,7 +648,9 @@ private fun DeckContent(
     // 下滑归类专用回调（携带图片信息，避免异步回调时 currentImage 变化的问题）
     onSwipeClassifyToAlbum: (ImageFile, Album) -> Unit = { _, album -> onAlbumClick(album) },
     // 下滑归类模式状态回调
-    onClassifyModeChange: (Boolean) -> Unit = {}
+    onClassifyModeChange: (Boolean) -> Unit = {},
+    // 固定标签点击模式的归类回调
+    onFixedTagAlbumClick: (Album) -> Unit = onAlbumClick
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val textColor = if (isDarkTheme) Color.White else TabulaColors.CatBlack
@@ -615,6 +670,10 @@ private fun DeckContent(
     
     // 回收站按钮位置（用于上滑删除的 Genie 动画目标点）
     var trashButtonBounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
+    
+    // 固定标签点击模式：触发 Genie 动画的目标索引和相册
+    var fixedTagTriggerIndex by remember { mutableStateOf<Int?>(null) }
+    var pendingFixedTagAlbum by remember { mutableStateOf<Album?>(null) }
 
     Box(
         modifier = Modifier
@@ -659,7 +718,8 @@ private fun DeckContent(
                         modifier = Modifier.fillMaxSize(),
                         isAdaptiveCardStyle = isAdaptiveCardStyle,
                         swipeStyle = swipeStyle,
-                        // 下滑归类相关参数
+                        // 下滑归类相关参数（固定标签点击模式下禁用下滑手势）
+                        enableDownSwipeClassify = tagSelectionMode == TagSelectionMode.SWIPE_AUTO,
                         albums = albums,
                         onClassifyToAlbum = { image, album ->
                             // 将图片添加到图集（使用新的下滑归类回调）
@@ -682,8 +742,24 @@ private fun DeckContent(
                         },
                         // 传递标签位置
                         tagPositions = tagPositions,
+                        // 每行标签数量和切换速度
+                        tagsPerRow = tagsPerRow,
+                        tagSwitchSpeed = tagSwitchSpeed,
                         // 传递回收站按钮位置（用于上滑删除的 Genie 动画）
-                        trashButtonBounds = trashButtonBounds
+                        trashButtonBounds = trashButtonBounds,
+                        // 固定标签点击模式：外部触发 Genie 动画
+                        fixedTagTriggerIndex = fixedTagTriggerIndex,
+                        onFixedTagAnimationComplete = {
+                            // 动画完成后，执行归类回调
+                            pendingFixedTagAlbum?.let { album ->
+                                currentImage?.let { image ->
+                                    onSwipeClassifyToAlbum(image, album)
+                                }
+                            }
+                            // 重置状态
+                            fixedTagTriggerIndex = null
+                            pendingFixedTagAlbum = null
+                        }
                     )
                 }
             }
@@ -694,19 +770,75 @@ private fun DeckContent(
                     .fillMaxWidth()
                     .height(140.dp) // 固定高度
             ) {
-                // 正常模式：显示剩余提示和标签
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = !isClassifyMode,
-                    enter = androidx.compose.animation.fadeIn(),
-                    exit = androidx.compose.animation.fadeOut()
-                ) {
+                // ========== 模式一：下滑自动选择 ==========
+                if (tagSelectionMode == TagSelectionMode.SWIPE_AUTO) {
+                    // 正常模式：显示剩余提示
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = !isClassifyMode,
+                        enter = androidx.compose.animation.fadeIn(),
+                        exit = androidx.compose.animation.fadeOut()
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "${remaining} 张待整理",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        letterSpacing = 2.sp,
+                                        fontWeight = FontWeight.Medium
+                                    ),
+                                    color = textColor.copy(alpha = 0.5f),
+                                    fontSize = 12.sp
+                                )
+                            }
+
+                            // 底部留白，为模式切换按钮预留空间
+                            Spacer(modifier = Modifier.height(80.dp))
+                        }
+                    }
+                    
+                    // 归类模式：显示标签选择器
+                    // 只在归类模式下渲染 AlbumDropTarget，避免 FrostedGlass 在 alpha=0 时的视觉残留
+                    if (isClassifyMode) {
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = true,
+                            enter = androidx.compose.animation.fadeIn(
+                                animationSpec = androidx.compose.animation.core.tween(200)
+                            ),
+                            exit = androidx.compose.animation.fadeOut(
+                                animationSpec = androidx.compose.animation.core.tween(200)
+                            )
+                        ) {
+                        AlbumDropTarget(
+                            albums = albums,
+                            selectedIndex = selectedAlbumIndex,
+                            onTagPositionChanged = { index, tagPosition ->
+                                // 更新标签位置映射
+                                tagPositions = tagPositions + (index to tagPosition)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            tagsPerRow = tagsPerRow
+                        )
+                        }
+                    }
+                }
+                
+                // ========== 模式二：固定标签点击 ==========
+                if (tagSelectionMode == TagSelectionMode.FIXED_TAP) {
                     Column(
                         modifier = Modifier.fillMaxSize()
                     ) {
+                        // 剩余提示（减少间距让标签往上）
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 8.dp),
+                                .padding(vertical = 4.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
@@ -719,34 +851,31 @@ private fun DeckContent(
                                 fontSize = 12.sp
                             )
                         }
-
-                        // 底部留白，为模式切换按钮预留空间
-                        Spacer(modifier = Modifier.height(80.dp))
-                    }
-                }
-                
-                // 归类模式：显示标签选择器
-                // 只在归类模式下渲染 AlbumDropTarget，避免 FrostedGlass 在 alpha=0 时的视觉残留
-                // 即使没有图集，也显示标签选择器（只有"新建"按钮）
-                if (isClassifyMode) {
-                    androidx.compose.animation.AnimatedVisibility(
-                        visible = true,
-                        enter = androidx.compose.animation.fadeIn(
-                            animationSpec = androidx.compose.animation.core.tween(200)
-                        ),
-                        exit = androidx.compose.animation.fadeOut(
-                            animationSpec = androidx.compose.animation.core.tween(200)
-                        )
-                    ) {
-                        AlbumDropTarget(
+                        
+                        // 固定标签栏
+                        FixedTagBar(
                             albums = albums,
-                            selectedIndex = selectedAlbumIndex,
+                            onAlbumClick = { album ->
+                                currentImage?.let { image ->
+                                    // 找到相册在 albums 列表中的索引（+1 因为索引0是新建按钮）
+                                    val albumIndex = albums.indexOf(album) + 1
+                                    // 设置待归类的相册和触发索引
+                                    pendingFixedTagAlbum = album
+                                    fixedTagTriggerIndex = albumIndex
+                                }
+                            },
+                            onCreateNewAlbumClick = {
+                                onAddAlbumClick(currentImage)
+                            },
                             onTagPositionChanged = { index, tagPosition ->
-                                // 更新标签位置映射
+                                // 更新标签位置映射（用于 Genie 动画目标点）
                                 tagPositions = tagPositions + (index to tagPosition)
                             },
                             modifier = Modifier.fillMaxWidth()
                         )
+                        
+                        // 底部留白，为模式切换按钮预留空间
+                        Spacer(modifier = Modifier.weight(1f))
                     }
                 }
             }

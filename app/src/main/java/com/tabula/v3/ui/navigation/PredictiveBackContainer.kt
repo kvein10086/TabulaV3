@@ -67,51 +67,60 @@ fun PredictiveBackContainer(
     // ========== 进入动画状态 ==========
     // enterProgress: 1.0 = 完全在屏幕外（右侧），0.0 = 完全进入
     val enterProgress = remember { Animatable(0f) }
-    var previousScreen by remember { mutableStateOf<AppScreen?>(null) }
     
-    // 在 composition 阶段计算是否是前进导航（避免第一帧闪烁）
-    val isForwardNavigation = remember(currentScreen, previousScreen) {
-        previousScreen != null && when {
-            previousScreen == AppScreen.DECK && currentScreen != AppScreen.DECK -> true
-            previousScreen == AppScreen.SETTINGS && currentScreen in listOf(
+    // 跟踪上一个屏幕（用于判断导航方向）
+    var previousScreenState by remember { mutableStateOf<AppScreen?>(null) }
+    
+    // 跟踪上一次动画初始化完成时的屏幕（用于判断是否需要在屏幕外开始）
+    var lastAnimatedScreen by remember { mutableStateOf<AppScreen?>(null) }
+    
+    // 判断是否需要进入动画（从父级导航到子级）
+    // 使用 remember(currentScreen) 确保在 currentScreen 改变时立即重新计算
+    val isNewForegroundScreen = remember(currentScreen) {
+        val prev = previousScreenState
+        val isForward = prev != null && when {
+            prev == AppScreen.DECK && currentScreen != AppScreen.DECK -> true
+            prev == AppScreen.SETTINGS && currentScreen in listOf(
                 AppScreen.ABOUT, AppScreen.SUPPORT, AppScreen.STATISTICS,
                 AppScreen.VIBRATION_SOUND, AppScreen.IMAGE_DISPLAY, AppScreen.LAB
             ) -> true
             else -> false
         }
+        isForward
     }
     
-    // 标记是否正在等待进入动画开始（用于第一帧定位）
-    var pendingEnterAnimation by remember { mutableStateOf(false) }
-    
-    // 当检测到前进导航时，立即标记（在 composition 阶段）
-    if (isForwardNavigation && currentScreen != AppScreen.DECK && enterProgress.value == 0f && !enterProgress.isRunning) {
-        pendingEnterAnimation = true
-    }
+    // 关键：在 Composition 阶段就判断是否需要将前景放在屏幕外
+    // 如果是新的前景屏幕，且动画还没初始化（lastAnimatedScreen 不是当前屏幕），则需要在屏幕外
+    val needsOffScreenStart = isNewForegroundScreen && 
+        currentScreen != AppScreen.DECK && 
+        lastAnimatedScreen != currentScreen
 
     // 检测屏幕变化，触发进入动画
     LaunchedEffect(currentScreen) {
         // 重置返回动画状态
         backProgress.snapTo(0f)
         
-        val shouldAnimate = isForwardNavigation && currentScreen != AppScreen.DECK
+        val shouldAnimate = isNewForegroundScreen && currentScreen != AppScreen.DECK
         
-        // 更新 previousScreen
-        previousScreen = currentScreen
+        // 更新 previousScreen（在计算完 shouldAnimate 之后）
+        previousScreenState = currentScreen
         
         if (shouldAnimate) {
-            // 触发进入动画
-            enterProgress.snapTo(1f)  // 从屏幕外开始
-            pendingEnterAnimation = false
+            // 先 snapTo 到屏幕外位置
+            enterProgress.snapTo(1f)
+            // 标记此屏幕的动画已初始化
+            lastAnimatedScreen = currentScreen
+            // 执行进入动画
             enterProgress.animateTo(
                 targetValue = 0f,
                 animationSpec = tween(
-                    durationMillis = 280,  // 稍快一点
+                    durationMillis = 280,
                     easing = FastOutSlowInEasing
                 )
             )
         } else {
-            pendingEnterAnimation = false
+            // 非动画导航，也更新 lastAnimatedScreen
+            lastAnimatedScreen = currentScreen
         }
     }
 
@@ -168,13 +177,14 @@ fun PredictiveBackContainer(
     // ========== 计算动画状态 ==========
     val enterValue = enterProgress.value.coerceIn(0f, 1f)
     
-    // 是否正在进行动画（包括等待动画开始的第一帧）
-    val isEnterAnimating = enterValue > 0.001f || pendingEnterAnimation
+    // 是否正在进行动画
+    val isEnterAnimating = enterValue > 0.001f || needsOffScreenStart
     val isBackAnimating = renderProgress > 0.001f
     val isAnimating = isEnterAnimating || isBackAnimating
     
-    // 计算实际的进入动画进度（第一帧使用 1.0 确保在屏幕外）
-    val effectiveEnterValue = if (pendingEnterAnimation) 1f else enterValue
+    // 计算实际的进入动画进度
+    // 如果需要在屏幕外开始（LaunchedEffect 还没执行），使用 1.0
+    val effectiveEnterValue = if (needsOffScreenStart) 1f else enterValue
 
     // 根容器背景设为黑色（兜底）
     Box(
@@ -192,13 +202,11 @@ fun PredictiveBackContainer(
             // 背景内容始终渲染
             backgroundContent()
             
-            // 背景遮罩：仅在动画期间显示
-            if (isAnimating && currentScreen != AppScreen.DECK) {
-                val maskAlpha = when {
-                    isEnterAnimating -> lerp(0.15f, 0.35f, effectiveEnterValue)  // 进入时遮罩
-                    isBackAnimating -> lerp(0.15f, 0f, renderProgress)  // 返回时遮罩渐隐
-                    else -> 0f
-                }
+            // 背景遮罩：仅在返回手势动画期间显示
+            // 注意：进入动画不显示遮罩，避免"变暗再变亮"的闪烁感
+            if (isBackAnimating && currentScreen != AppScreen.DECK) {
+                // 返回时：遮罩从 0.2f 渐变到 0（随着页面滑出，背景逐渐显现）
+                val maskAlpha = lerp(0.2f, 0f, renderProgress)
                 if (maskAlpha > 0.001f) {
                     Box(
                         modifier = Modifier

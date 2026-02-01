@@ -36,7 +36,7 @@ import com.tabula.v3.data.model.Album
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
 
 /**
- * 每行显示的标签数量
+ * 默认每行显示的标签数量
  */
 const val TAGS_PER_ROW = 7
 
@@ -61,7 +61,8 @@ fun AlbumDropTarget(
     albums: List<Album>,
     selectedIndex: Int,
     onTagPositionChanged: ((Int, TagPosition) -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    tagsPerRow: Int = TAGS_PER_ROW
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val verticalScrollState = rememberScrollState()
@@ -69,12 +70,12 @@ fun AlbumDropTarget(
     
     // 总标签数（包括新建按钮）
     val totalTags = albums.size + 1
-    // 计算总行数
-    val totalRows = (totalTags + TAGS_PER_ROW - 1) / TAGS_PER_ROW
+    // 计算总行数（使用动态的每行数量）
+    val totalRows = (totalTags + tagsPerRow - 1) / tagsPerRow
     
     // 计算选中标签所在的行和列
-    val selectedRow = selectedIndex / TAGS_PER_ROW
-    val selectedCol = selectedIndex % TAGS_PER_ROW
+    val selectedRow = selectedIndex / tagsPerRow
+    val selectedCol = selectedIndex % tagsPerRow
     
     // 每行的水平滚动状态
     val rowScrollStates = remember { mutableStateMapOf<Int, androidx.compose.foundation.ScrollState>() }
@@ -118,8 +119,8 @@ fun AlbumDropTarget(
             horizontalAlignment = Alignment.Start
         ) {
             for (rowIndex in 0 until totalRows) {
-                val rowStartIndex = rowIndex * TAGS_PER_ROW
-                val rowEndIndex = minOf(rowStartIndex + TAGS_PER_ROW, totalTags)
+                val rowStartIndex = rowIndex * tagsPerRow
+                val rowEndIndex = minOf(rowStartIndex + tagsPerRow, totalTags)
                 
                 // 每行独立的水平滚动状态
                 val rowScrollState = remember { androidx.compose.foundation.ScrollState(0) }

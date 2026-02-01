@@ -145,6 +145,8 @@ fun SwipeableCardStack(
     isAdaptiveCardStyle: Boolean = false,
     // 卡片切换样式（切牌/摸牌）
     swipeStyle: SwipeStyle = SwipeStyle.SHUFFLE,
+    // 是否启用下滑归类手势（固定标签点击模式下禁用）
+    enableDownSwipeClassify: Boolean = true,
     // 下滑归类相关参数
     albums: List<Album> = emptyList(),
     onClassifyToAlbum: ((ImageFile, Album) -> Unit)? = null,
@@ -154,8 +156,18 @@ fun SwipeableCardStack(
     onSelectedIndexChange: ((Int) -> Unit)? = null,
     // 标签位置映射（索引 -> 屏幕坐标）
     tagPositions: Map<Int, TagPosition> = emptyMap(),
+    // 每行标签数量（用于下滑归类的2D选择）
+    tagsPerRow: Int = TAGS_PER_ROW,
+    // 标签切换速度（数值越大越灵敏，默认1.0）
+    tagSwitchSpeed: Float = 1.0f,
     // 回收站按钮位置（用于上滑删除的Genie动画目标点）
-    trashButtonBounds: Rect = Rect.Zero
+    trashButtonBounds: Rect = Rect.Zero,
+    // 滑动起点回调（用于快捷按钮的拇指侧检测）
+    onSwipeStart: ((xRatio: Float, yRatio: Float) -> Unit)? = null,
+    // 固定标签点击模式：外部触发 Genie 动画的目标索引（非 null 时触发）
+    fixedTagTriggerIndex: Int? = null,
+    // 固定标签 Genie 动画完成回调
+    onFixedTagAnimationComplete: (() -> Unit)? = null
 ) {
     if (images.isEmpty()) return
     
@@ -173,13 +185,19 @@ fun SwipeableCardStack(
             modifier = modifier,
             cardAspectRatio = cardAspectRatio,
             isAdaptiveCardStyle = isAdaptiveCardStyle,
+            enableDownSwipeClassify = enableDownSwipeClassify,
             albums = albums,
             onClassifyToAlbum = onClassifyToAlbum,
             onCreateNewAlbum = onCreateNewAlbum,
             onClassifyModeChange = onClassifyModeChange,
             onSelectedIndexChange = onSelectedIndexChange,
             tagPositions = tagPositions,
-            trashButtonBounds = trashButtonBounds
+            tagsPerRow = tagsPerRow,
+            tagSwitchSpeed = tagSwitchSpeed,
+            trashButtonBounds = trashButtonBounds,
+            onSwipeStart = onSwipeStart,
+            fixedTagTriggerIndex = fixedTagTriggerIndex,
+            onFixedTagAnimationComplete = onFixedTagAnimationComplete
         )
         return
     }
@@ -206,8 +224,11 @@ fun SwipeableCardStack(
     val classifyExitThresholdPx = screenHeightPx * 0.03f  // 退出归类模式的阈值
     
     // 2D 标签选择参数（支持斜向滑动选择任意标签）
-    val tagSwitchDistanceXPx = with(density) { 16.dp.toPx() }  // 水平方向切换列的距离（更灵敏）
-    val tagSwitchDistanceYPx = with(density) { 20.dp.toPx() }  // 垂直方向切换行的距离（更灵敏）
+    // 切换距离受 tagSwitchSpeed 影响：速度越大，距离越小，切换越灵敏
+    val baseDistanceX = with(density) { 16.dp.toPx() }
+    val baseDistanceY = with(density) { 20.dp.toPx() }
+    val tagSwitchDistanceXPx = baseDistanceX / tagSwitchSpeed.coerceIn(0.5f, 2.0f)
+    val tagSwitchDistanceYPx = baseDistanceY / tagSwitchSpeed.coerceIn(0.5f, 2.0f)
     val totalTags = albums.size + 1  // 总标签数（+1 是新建按钮）
 
     // 动画时长
@@ -974,6 +995,12 @@ fun SwipeableCardStack(
                                     swipeThresholdHapticTriggered = false
                                     deleteThresholdHapticTriggered = false
                                     classifyThresholdHapticTriggered = false
+                                    
+                                    // 采集滑动起点（用于拇指侧检测）
+                                    onSwipeStart?.invoke(
+                                        startOffset.x / size.width.toFloat(),
+                                        startOffset.y / size.height.toFloat()
+                                    )
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
@@ -987,8 +1014,8 @@ fun SwipeableCardStack(
                                         // 判断滑动方向
                                         if (totalDy > totalDx * 1.5f && dragAmount.y < 0) {
                                             lockedDirection = SwipeDirection.UP
-                                        } else if (totalDy > totalDx * 1.5f && dragAmount.y > 0) {
-                                            // 下滑归类（即使没有图集，也可以下滑触发新建）
+                                        } else if (totalDy > totalDx * 1.5f && dragAmount.y > 0 && enableDownSwipeClassify) {
+                                            // 下滑归类（仅在启用时生效）
                                             lockedDirection = SwipeDirection.DOWN
                                         } else if (totalDx > 20f || totalDy > 20f) {
                                             lockedDirection = SwipeDirection.HORIZONTAL
@@ -1085,24 +1112,24 @@ fun SwipeableCardStack(
                                                     
                                                     // 默认起始位置：第一个相册（索引1）
                                                     val defaultIndex = if (albums.isNotEmpty()) 1 else 0
-                                                    val startRow = defaultIndex / TAGS_PER_ROW
-                                                    val startCol = defaultIndex % TAGS_PER_ROW
+                                                    val startRow = defaultIndex / tagsPerRow
+                                                    val startCol = defaultIndex % tagsPerRow
                                                     
                                                     // 计算新的行和列
                                                     var newCol = startCol + colOffset
                                                     var newRow = startRow + rowOffset
                                                     
                                                     // 计算总行数
-                                                    val totalRows = (totalTags + TAGS_PER_ROW - 1) / TAGS_PER_ROW
+                                                    val totalRows = (totalTags + tagsPerRow - 1) / tagsPerRow
                                                     
                                                     // 限制行范围
                                                     newRow = newRow.coerceIn(0, totalRows - 1)
                                                     
                                                     // 限制列范围
-                                                    newCol = newCol.coerceIn(0, TAGS_PER_ROW - 1)
+                                                    newCol = newCol.coerceIn(0, tagsPerRow - 1)
                                                     
                                                     // 计算全局索引
-                                                    var newIndex = newRow * TAGS_PER_ROW + newCol
+                                                    var newIndex = newRow * tagsPerRow + newCol
                                                     
                                                     // 确保不超过最后一个标签
                                                     newIndex = newIndex.coerceIn(0, totalTags - 1)
@@ -1218,6 +1245,26 @@ fun SwipeableCardStack(
             }
         }
         
+        // ========== 固定标签点击模式：外部触发 Genie 动画 ==========
+        LaunchedEffect(fixedTagTriggerIndex) {
+            if (fixedTagTriggerIndex != null && !genieController.isAnimating) {
+                // 预加载 bitmap（如果还没有）
+                if (preloadedBitmap == null) {
+                    preloadBitmapForGenie()
+                    // 等待预加载完成（最多100ms）
+                    var waitTime = 0
+                    while (isPreloading && waitTime < 100) {
+                        kotlinx.coroutines.delay(10)
+                        waitTime += 10
+                    }
+                }
+                // 执行 Genie 动画
+                executeGenieAnimation(fixedTagTriggerIndex)
+                // 通知外部动画完成
+                onFixedTagAnimationComplete?.invoke()
+            }
+        }
+        
         // ========== Genie Effect 覆盖层 ==========
         if (genieController.isAnimating) {
             GenieEffectOverlay(
@@ -1261,13 +1308,19 @@ private fun DrawModeCardStack(
     modifier: Modifier = Modifier,
     cardAspectRatio: Float = 3f / 4f,
     isAdaptiveCardStyle: Boolean = false,
+    enableDownSwipeClassify: Boolean = true,
     albums: List<Album> = emptyList(),
     onClassifyToAlbum: ((ImageFile, Album) -> Unit)? = null,
     onCreateNewAlbum: ((ImageFile) -> Unit)? = null,
     onClassifyModeChange: ((Boolean) -> Unit)? = null,
     onSelectedIndexChange: ((Int) -> Unit)? = null,
     tagPositions: Map<Int, TagPosition> = emptyMap(),
-    trashButtonBounds: Rect = Rect.Zero
+    tagsPerRow: Int = TAGS_PER_ROW,
+    tagSwitchSpeed: Float = 1.0f,
+    trashButtonBounds: Rect = Rect.Zero,
+    onSwipeStart: ((xRatio: Float, yRatio: Float) -> Unit)? = null,
+    fixedTagTriggerIndex: Int? = null,
+    onFixedTagAnimationComplete: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -1288,9 +1341,11 @@ private fun DrawModeCardStack(
     val classifyThresholdPx = screenHeightPx * 0.05f
     val classifyExitThresholdPx = screenHeightPx * 0.03f
     
-    // 2D 标签选择参数
-    val tagSwitchDistanceXPx = with(density) { 16.dp.toPx() }
-    val tagSwitchDistanceYPx = with(density) { 20.dp.toPx() }
+    // 2D 标签选择参数（受 tagSwitchSpeed 影响）
+    val baseDistanceX = with(density) { 16.dp.toPx() }
+    val baseDistanceY = with(density) { 20.dp.toPx() }
+    val tagSwitchDistanceXPx = baseDistanceX / tagSwitchSpeed.coerceIn(0.5f, 2.0f)
+    val tagSwitchDistanceYPx = baseDistanceY / tagSwitchSpeed.coerceIn(0.5f, 2.0f)
     val totalTags = albums.size + 1
 
     // 动画时长
@@ -2317,13 +2372,19 @@ private fun DrawModeCardStack(
                         }
                         .pointerInput(drawState.currentIndex, albums) {
                             detectDragGestures(
-                                onDragStart = {
+                                onDragStart = { startOffset ->
                                     isDragging = true
                                     hasDragged = false
                                     velocityTracker.resetTracking()
                                     swipeThresholdHapticTriggered = false
                                     deleteThresholdHapticTriggered = false
                                     classifyThresholdHapticTriggered = false
+                                    
+                                    // 采集滑动起点（用于拇指侧检测）
+                                    onSwipeStart?.invoke(
+                                        startOffset.x / size.width.toFloat(),
+                                        startOffset.y / size.height.toFloat()
+                                    )
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
@@ -2337,7 +2398,8 @@ private fun DrawModeCardStack(
                                         // 更早锁定方向，提高响应速度
                                         if (totalDy > totalDx * 1.3f && dragAmount.y < 0) {
                                             lockedDirection = SwipeDirection.UP
-                                        } else if (totalDy > totalDx * 1.3f && dragAmount.y > 0) {
+                                        } else if (totalDy > totalDx * 1.3f && dragAmount.y > 0 && enableDownSwipeClassify) {
+                                            // 下滑归类（仅在启用时生效）
                                             lockedDirection = SwipeDirection.DOWN
                                         } else if (totalDx > 12f || totalDy > 12f) {
                                             lockedDirection = SwipeDirection.HORIZONTAL
@@ -2413,17 +2475,17 @@ private fun DrawModeCardStack(
                                                     val rowOffset = (relativeY / tagSwitchDistanceYPx).toInt()
                                                     
                                                     val defaultIndex = if (albums.isNotEmpty()) 1 else 0
-                                                    val startRow = defaultIndex / TAGS_PER_ROW
-                                                    val startCol = defaultIndex % TAGS_PER_ROW
+                                                    val startRow = defaultIndex / tagsPerRow
+                                                    val startCol = defaultIndex % tagsPerRow
                                                     
                                                     var newCol = startCol + colOffset
                                                     var newRow = startRow + rowOffset
                                                     
-                                                    val totalRows = (totalTags + TAGS_PER_ROW - 1) / TAGS_PER_ROW
+                                                    val totalRows = (totalTags + tagsPerRow - 1) / tagsPerRow
                                                     newRow = newRow.coerceIn(0, totalRows - 1)
-                                                    newCol = newCol.coerceIn(0, TAGS_PER_ROW - 1)
+                                                    newCol = newCol.coerceIn(0, tagsPerRow - 1)
                                                     
-                                                    var newIndex = newRow * TAGS_PER_ROW + newCol
+                                                    var newIndex = newRow * tagsPerRow + newCol
                                                     newIndex = newIndex.coerceIn(0, totalTags - 1)
                                                     
                                                     if (newIndex != selectedAlbumIndex) {
@@ -2561,6 +2623,26 @@ private fun DrawModeCardStack(
                     elevation = 8.dp,
                     badges = rememberImageBadges(centerCard, showHdrBadges, showMotionBadges)
                 )
+            }
+        }
+        
+        // ========== 固定标签点击模式：外部触发 Genie 动画 ==========
+        LaunchedEffect(fixedTagTriggerIndex) {
+            if (fixedTagTriggerIndex != null && !genieController.isAnimating) {
+                // 预加载 bitmap（如果还没有）
+                if (preloadedBitmap == null) {
+                    preloadBitmapForGenie()
+                    // 等待预加载完成（最多100ms）
+                    var waitTime = 0
+                    while (isPreloading && waitTime < 100) {
+                        kotlinx.coroutines.delay(10)
+                        waitTime += 10
+                    }
+                }
+                // 执行 Genie 动画
+                executeGenieAnimation(fixedTagTriggerIndex)
+                // 通知外部动画完成
+                onFixedTagAnimationComplete?.invoke()
             }
         }
         
