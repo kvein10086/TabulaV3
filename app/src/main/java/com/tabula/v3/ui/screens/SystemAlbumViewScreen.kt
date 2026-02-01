@@ -12,6 +12,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -125,14 +128,21 @@ fun SystemAlbumViewScreen(
                 }
             }
 
+            // 获取导航栏高度，实现沉浸式效果
+            val navBarHeight = WindowInsets.navigationBars
+                .asPaddingValues().calculateBottomPadding()
+            
             // 照片网格
             LazyVerticalGrid(
                 columns = GridCells.Fixed(3),
-                contentPadding = PaddingValues(4.dp),
+                contentPadding = PaddingValues(
+                    start = 4.dp,
+                    end = 4.dp,
+                    top = 4.dp,
+                    bottom = 4.dp + navBarHeight  // 底部留出导航栏空间
+                ),
                 state = gridState,
-                modifier = Modifier
-                    .weight(1f)
-                    .navigationBarsPadding()
+                modifier = Modifier.weight(1f)
             ) {
                 items(images, key = { it.id }) { image ->
                     PhotoGridItem(

@@ -282,7 +282,7 @@ fun AboutScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
-                .navigationBarsPadding()
+                // navigationBarsPadding 移到滚动内容底部，实现沉浸式效果
         ) {
             // 顶部导航栏
             Box(
@@ -354,7 +354,7 @@ fun AboutScreen(
                 )
 
                 Text(
-                    text = "2026.2.1",
+                    text = "2026.2.2",
                     style = MaterialTheme.typography.bodySmall,
                     color = secondaryTextColor.copy(alpha = 0.8f)
                 )
@@ -626,7 +626,8 @@ fun AboutScreen(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(32.dp))
+                // 底部留出导航栏空间，实现沉浸式效果
+                Spacer(modifier = Modifier.height(32.dp).navigationBarsPadding())
             }
         }
     }

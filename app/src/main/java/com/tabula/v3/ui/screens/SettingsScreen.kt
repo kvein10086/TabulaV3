@@ -203,7 +203,7 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .background(backgroundColor)
                 .statusBarsPadding()
-                .navigationBarsPadding()
+                // navigationBarsPadding 移到滚动内容底部，实现沉浸式效果
         ) {
             // ========== 顶部大标题栏 ==========
             Box(
@@ -527,7 +527,8 @@ fun SettingsScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.height(40.dp))
+            // 底部留出导航栏空间，实现沉浸式效果
+            Spacer(modifier = Modifier.height(40.dp).navigationBarsPadding())
         }
     }
 
@@ -671,7 +672,7 @@ fun VibrationSoundScreen(
             .fillMaxSize()
             .background(backgroundColor)
             .statusBarsPadding()
-            .navigationBarsPadding()
+            // navigationBarsPadding 移到滚动内容底部，实现沉浸式效果
     ) {
         val context = LocalContext.current
         // 顶部栏
@@ -785,7 +786,8 @@ fun VibrationSoundScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            // 底部留出导航栏空间，实现沉浸式效果
+            Spacer(modifier = Modifier.height(28.dp).navigationBarsPadding())
         }
     }
 }
@@ -826,7 +828,7 @@ fun ImageDisplayScreen(
             .fillMaxSize()
             .background(backgroundColor)
             .statusBarsPadding()
-            .navigationBarsPadding()
+            // navigationBarsPadding 移到滚动内容底部，实现沉浸式效果
     ) {
         // 顶部栏
         Box(
@@ -1009,7 +1011,8 @@ fun ImageDisplayScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            // 底部留出导航栏空间，实现沉浸式效果
+            Spacer(modifier = Modifier.height(28.dp).navigationBarsPadding())
         }
     }
 }
@@ -1094,7 +1097,7 @@ fun LabScreen(
             .fillMaxSize()
             .background(backgroundColor)
             .statusBarsPadding()
-            .navigationBarsPadding()
+            // navigationBarsPadding 移到滚动内容底部，实现沉浸式效果
     ) {
         // 顶部栏
         Box(
@@ -1320,7 +1323,8 @@ fun LabScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            // 底部留出导航栏空间，实现沉浸式效果
+            Spacer(modifier = Modifier.height(28.dp).navigationBarsPadding())
         }
     }
     

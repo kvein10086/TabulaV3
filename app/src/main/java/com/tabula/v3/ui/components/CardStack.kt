@@ -1692,7 +1692,8 @@ private fun DrawModeCardStack(
         scope.launch { outgoingLeftOffsetX.animateTo(-sideCardOffsetPx, animSpec) }
         scope.launch { outgoingLeftScale.animateTo(0.88f, animSpec) }
         scope.launch { outgoingLeftAlpha.animateTo(1f, animSpec) }  // 保持不透明
-        // leftCardAlpha 保持 1f，不需要动画
+        // 旧左卡快速淡出，避免与移动过来的旧中卡重叠
+        scope.launch { leftCardAlpha.animateTo(0f, fastSpec) }
         scope.launch { leftCardOffsetX.animateTo(-sideCardOffsetPx * 1.3f, animSpec) }
         
         // 右卡保持不透明，不需要淡出
@@ -1724,6 +1725,37 @@ private fun DrawModeCardStack(
         leftCardScale.snapTo(0.88f)
         leftCardRotation.snapTo(-5f)
         rightCardAlpha.snapTo(1f)  // 保持不透明
+        lockedDirection = SwipeDirection.NONE
+        swipeThresholdHapticTriggered = false
+    }
+    
+    /**
+     * 执行最后一张卡片的淡出动画（进入总结页面）
+     * 当用户在最后一张卡片上右滑时调用
+     */
+    suspend fun executeLastCardAnimation() {
+        // 播放淡出动画
+        val animDuration = 150
+        val animSpec = tween<Float>(animDuration, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+        
+        val currentX = centerDragOffsetX.value
+        val targetX = if (currentX > 0) screenWidthPx * 0.3f else -screenWidthPx * 0.3f
+        
+        scope.launch { centerDragOffsetX.animateTo(targetX, animSpec) }
+        scope.launch { centerDragAlpha.animateTo(0f, animSpec) }
+        scope.launch { centerDragScale.animateTo(0.95f, animSpec) }
+        
+        kotlinx.coroutines.delay(100)
+        
+        // 通知进入总结页面
+        onIndexChange(drawState.currentIndex + 1)
+        
+        // 重置状态
+        centerDragOffsetX.snapTo(0f)
+        centerDragOffsetY.snapTo(0f)
+        centerDragRotation.snapTo(0f)
+        centerDragAlpha.snapTo(1f)
+        centerDragScale.snapTo(1f)
         lockedDirection = SwipeDirection.NONE
         swipeThresholdHapticTriggered = false
     }
@@ -2070,8 +2102,8 @@ private fun DrawModeCardStack(
     ) {
         // ========== 左卡 (deck[i+1]) - 不可滑，消费 pointer 事件 ==========
         // 发牌过渡时：左卡正在补位到中间，由 incomingCenter 动画控制
-        // 收牌过渡时：左卡正在滑出，使用 leftCardAlpha 控制淡出
-        if (leftCard != null && !isDrawTransitioning) {
+        // 收牌过渡时：中卡正在滑到左侧，由 recallTransitionCenter 控制，此时新左卡（旧中卡）不显示
+        if (leftCard != null && !isDrawTransitioning && !isRecallTransitioning) {
             key(leftCard.id) {
                 ImageCard(
                     imageFile = leftCard,
@@ -2101,7 +2133,7 @@ private fun DrawModeCardStack(
                     badges = rememberImageBadges(leftCard, showHdrBadges, showMotionBadges)
                 )
             }
-        } else if (leftCard == null && !isDrawTransitioning) {
+        } else if (leftCard == null && !isDrawTransitioning && !isRecallTransitioning) {
             ImageCardPlaceholder(
                 modifier = Modifier
                     .zIndex(0.3f)  // 高于右卡(0f)，确保下一张在下下张上面
@@ -2590,8 +2622,13 @@ private fun DrawModeCardStack(
                                                 if (offsetX > 0) {
                                                     // 右滑 → 发牌
                                                     val triggered = offsetX > swipeThresholdPx || velocityX > velocityThreshold
-                                                    if (triggered && drawState.canDraw(images.size)) {
-                                                        executeDrawAnimation()
+                                                    if (triggered) {
+                                                        if (drawState.canDraw(images.size)) {
+                                                            executeDrawAnimation()
+                                                        } else {
+                                                            // 最后一张卡片，进入总结页面
+                                                            executeLastCardAnimation()
+                                                        }
                                                     } else {
                                                         resetDragState()
                                                     }

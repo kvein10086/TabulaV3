@@ -35,8 +35,22 @@ class FileOperationManager(private val context: Context) {
      * 删除操作结果
      */
     sealed class DeleteResult {
-        data object Success : DeleteResult()
-        data class NeedsPermission(val intentSender: IntentSender) : DeleteResult()
+        /**
+         * 删除成功
+         * @param deleted 成功删除的 URI 集合（支持部分成功场景）
+         */
+        data class Success(val deleted: Set<Uri>) : DeleteResult()
+        
+        /**
+         * 需要用户授权
+         * @param intentSender 用于发起授权请求
+         * @param pendingUris 待删除的 URI 列表（授权后需要重试删除）
+         */
+        data class NeedsPermission(
+            val intentSender: IntentSender,
+            val pendingUris: List<Uri>
+        ) : DeleteResult()
+        
         data class Error(val message: String) : DeleteResult()
     }
 
@@ -62,29 +76,37 @@ class FileOperationManager(private val context: Context) {
      * 批量删除图片
      *
      * @param uris 图片 URI 列表
-     * @return 删除结果
+     * @return 删除结果（Success 包含实际成功删除的 URI 集合）
      */
     suspend fun deleteImages(uris: List<Uri>): DeleteResult = withContext(Dispatchers.IO) {
         if (uris.isEmpty()) {
-            return@withContext DeleteResult.Success
+            return@withContext DeleteResult.Success(emptySet())
         }
 
         try {
             // Android 11+ (API 30+) 使用 createDeleteRequest
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val pendingIntent = MediaStore.createDeleteRequest(contentResolver, uris)
-                return@withContext DeleteResult.NeedsPermission(pendingIntent.intentSender)
+                return@withContext DeleteResult.NeedsPermission(pendingIntent.intentSender, uris)
             } else {
-                // Android 10 及以下直接删除
+                // Android 10 及以下直接删除，逐个尝试并记录成功的
+                val deleted = mutableSetOf<Uri>()
                 uris.forEach { uri ->
-                    contentResolver.delete(uri, null, null)
+                    try {
+                        val count = contentResolver.delete(uri, null, null)
+                        if (count > 0) {
+                            deleted.add(uri)
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to delete $uri: ${e.message}")
+                    }
                 }
-                return@withContext DeleteResult.Success
+                return@withContext DeleteResult.Success(deleted)
             }
         } catch (e: RecoverableSecurityException) {
             // 权限不足，需要用户确认
             Log.w(TAG, "RecoverableSecurityException: ${e.message}")
-            return@withContext DeleteResult.NeedsPermission(e.userAction.actionIntent.intentSender)
+            return@withContext DeleteResult.NeedsPermission(e.userAction.actionIntent.intentSender, uris)
         } catch (e: SecurityException) {
             Log.e(TAG, "SecurityException: ${e.message}")
             return@withContext DeleteResult.Error("权限不足: ${e.message}")
@@ -92,6 +114,26 @@ class FileOperationManager(private val context: Context) {
             Log.e(TAG, "Delete failed: ${e.message}")
             return@withContext DeleteResult.Error(e.message ?: "删除失败")
         }
+    }
+    
+    /**
+     * 验证删除结果
+     * 
+     * 在用户授权后调用，检查哪些 URI 实际被成功删除
+     * 
+     * @param uris 原本要删除的 URI 列表
+     * @return 已被成功删除的 URI 集合
+     */
+    suspend fun verifyDeletion(uris: List<Uri>): Set<Uri> = withContext(Dispatchers.IO) {
+        val deleted = mutableSetOf<Uri>()
+        uris.forEach { uri ->
+            if (!isUriValid(uri)) {
+                // URI 已不存在，说明删除成功
+                deleted.add(uri)
+            }
+        }
+        Log.d(TAG, "Verified deletion: ${deleted.size}/${uris.size} URIs deleted")
+        deleted
     }
 
     /**
@@ -108,7 +150,7 @@ class FileOperationManager(private val context: Context) {
                     listOf(uri),
                     true  // 移到回收站
                 )
-                return@withContext DeleteResult.NeedsPermission(pendingIntent.intentSender)
+                return@withContext DeleteResult.NeedsPermission(pendingIntent.intentSender, listOf(uri))
             } else {
                 // 旧版本直接删除
                 return@withContext deleteImage(uri)
@@ -133,7 +175,7 @@ class FileOperationManager(private val context: Context) {
                     listOf(uri),
                     false  // 从回收站恢复
                 )
-                return@withContext DeleteResult.NeedsPermission(pendingIntent.intentSender)
+                return@withContext DeleteResult.NeedsPermission(pendingIntent.intentSender, listOf(uri))
             } else {
                 // 旧版本不支持
                 return@withContext DeleteResult.Error("此 Android 版本不支持恢复功能")

@@ -28,6 +28,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -162,7 +165,7 @@ fun RecycleBinScreen(
                 .fillMaxSize()
                 .background(backgroundColor)
                 .statusBarsPadding()
-                .navigationBarsPadding()
+                // navigationBarsPadding 移到内容底部，实现沉浸式效果
         ) {
             // ========== 顶部栏 ==========
             if (isSelectionMode) {
@@ -213,10 +216,19 @@ fun RecycleBinScreen(
                     secondaryTextColor = secondaryTextColor
                 )
             } else {
+                // 获取导航栏高度，实现沉浸式效果
+                val navBarHeight = WindowInsets.navigationBars
+                    .asPaddingValues().calculateBottomPadding()
+                
                 LazyVerticalStaggeredGrid(
                     columns = StaggeredGridCells.Fixed(3),
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp), // 增加 padding
+                    contentPadding = PaddingValues(
+                        start = 16.dp,
+                        end = 16.dp,
+                        top = 16.dp,
+                        bottom = 16.dp + navBarHeight  // 底部留出导航栏空间
+                    ),
                     horizontalArrangement = Arrangement.spacedBy(12.dp), // 增加间距
                     verticalItemSpacing = 12.dp
                 ) {

@@ -325,6 +325,13 @@ private fun AppAlbumCard(
 ) {
     val context = LocalContext.current
 
+    // 如果 coverImage 为 null 但有 coverImageId，直接用 ID 构建 URI 作为 fallback
+    val coverUri = coverImage?.uri 
+        ?: album.coverImageId?.let { android.net.Uri.parse("content://media/external/images/media/$it") }
+    
+    // 跟踪图片加载状态
+    var loadFailed by remember { mutableStateOf(false) }
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
@@ -341,18 +348,19 @@ private fun AppAlbumCard(
                 .clip(RoundedCornerShape(16.dp))
                 .background(if (isDarkTheme) Color(0xFF1C1C1E) else Color.White)
         ) {
-            if (coverImage != null) {
+            if (coverUri != null && !loadFailed) {
                 AsyncImage(
                     model = ImageRequest.Builder(context)
-                        .data(coverImage.uri)
+                        .data(coverUri)
                         .crossfade(true)
                         .build(),
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
+                    onError = { loadFailed = true }
                 )
             } else {
-                // 没有封面时显示小猫咪图片
+                // 没有封面或加载失败时显示小猫咪图片
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(R.drawable.zpcat1)
@@ -400,6 +408,13 @@ private fun AppAlbumGridCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    
+    // 如果 coverImage 为 null 但有 coverImageId，直接用 ID 构建 URI 作为 fallback
+    val coverUri = coverImage?.uri 
+        ?: album.coverImageId?.let { android.net.Uri.parse("content://media/external/images/media/$it") }
+    
+    // 跟踪图片加载状态
+    var loadFailed by remember { mutableStateOf(false) }
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -417,18 +432,19 @@ private fun AppAlbumGridCard(
                 .clip(RoundedCornerShape(12.dp))  // 3列布局圆角稍小
                 .background(if (isDarkTheme) Color(0xFF1C1C1E) else Color.White)
         ) {
-            if (coverImage != null) {
+            if (coverUri != null && !loadFailed) {
                 AsyncImage(
                     model = ImageRequest.Builder(context)
-                        .data(coverImage.uri)
+                        .data(coverUri)
                         .crossfade(true)
                         .build(),
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
+                    onError = { loadFailed = true }
                 )
             } else {
-                // 没有封面时显示小猫咪图片
+                // 没有封面或加载失败时显示小猫咪图片
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(R.drawable.zpcat1)

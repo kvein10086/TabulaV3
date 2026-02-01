@@ -451,15 +451,17 @@ fun ViewerOverlay(
             )
             
             // 上层：高清图片 (ARGB_8888)，加载完成后淡入覆盖
-            // 计算高清图目标尺寸：普通查看时使用屏幕适配尺寸，放大时使用原图尺寸
-            val hdTargetSize = if (shouldLoadUltraHd) {
-                // 放大时加载原图尺寸（最大 4096，避免 OOM）
-                val maxDim = maxOf(image.actualWidth, image.actualHeight).coerceAtMost(4096).coerceAtLeast(1)
-                coil.size.Size(maxDim, maxDim)
-            } else {
-                // 普通查看时使用屏幕 2 倍尺寸（保证清晰度）
-                // 确保 targetDim 至少为 1，避免容器尺寸为 0 时崩溃
-                val targetDim = (maxOf(containerWidthPx, containerHeightPx) * 1.5f).toInt().coerceIn(1, 2048)
+            // 计算高清图目标尺寸：根据用户缩放比例动态调整，确保放大时不模糊
+            // 关键：graphicsLayer 的 scale 是对已渲染像素进行缩放，所以需要加载 scale 倍的分辨率
+            val hdTargetSize = run {
+                val baseSize = maxOf(containerWidthPx, containerHeightPx)
+                // 根据缩放比例计算所需尺寸：baseSize * scale，确保放大时有足够分辨率
+                val scaledSize = (baseSize * userScale).toInt()
+                // 同时考虑图片原始尺寸作为上限（避免请求超过原图分辨率）
+                val imageDim = maxOf(image.actualWidth, image.actualHeight)
+                val maxAllowed = if (imageDim > 0) imageDim.coerceAtMost(4096) else 4096
+                // 最终尺寸：在 1 到 maxAllowed 之间
+                val targetDim = scaledSize.coerceIn(1, maxAllowed)
                 coil.size.Size(targetDim, targetDim)
             }
             

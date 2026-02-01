@@ -6,14 +6,18 @@ package com.tabula.v3.data.model
  * 记录一张图片被归类到了哪些相册。
  * 支持一张图片属于多个相册的场景。
  *
- * @param imageId MediaStore 图片 ID
- * @param imageUri 图片 URI 字符串（备份用，防止 ID 失效）
+ * @param imageId MediaStore 图片 ID（同步后会更新为图集文件夹中图片的 ID）
+ * @param imageUri 当前有效的图片 URI（同步后指向图集文件夹中的副本）
+ * @param originalUri 最初原图位置 URI（永远指向最初来源，如相机胶卷，清理后设为 null）
+ * @param cleanupUris 待清理的旧位置 URI 集合（图集间移动产生的中间残留，清理后移除）
  * @param albumIds 关联的相册 ID 列表
  * @param addedAt 最后一次归类的时间戳
  */
 data class AlbumMapping(
     val imageId: Long,
     val imageUri: String,
+    val originalUri: String? = null,
+    val cleanupUris: Set<String> = emptySet(),
     val albumIds: List<String>,
     val addedAt: Long = System.currentTimeMillis()
 )

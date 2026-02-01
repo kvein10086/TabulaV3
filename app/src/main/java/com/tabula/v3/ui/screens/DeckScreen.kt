@@ -38,6 +38,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.Button
@@ -179,6 +180,8 @@ fun DeckScreen(
     // 模式切换
     isAlbumMode: Boolean = false,
     onModeChange: (Boolean) -> Unit = {},
+    // 清理所有图集原图
+    onCleanupAllAlbums: (() -> Unit)? = null,
     // 流体云：批次剩余数量回调
     onBatchRemainingChange: (Int) -> Unit = {},
     // 快捷操作按钮
@@ -350,7 +353,8 @@ fun DeckScreen(
                         onSystemBucketClick = onSystemBucketClick,
                         onReorderAlbums = onReorderAlbums,
                         onSyncClick = onSyncClick,
-                        onSettingsClick = onNavigateToSettings
+                        onSettingsClick = onNavigateToSettings,
+                        onCleanupAllAlbums = onCleanupAllAlbums
                     )
                 }
                 else -> {
@@ -979,7 +983,8 @@ private fun AlbumsGridContent(
     onSystemBucketClick: (String) -> Unit = {},
     onReorderAlbums: (List<String>) -> Unit = {},
     onSyncClick: () -> Unit = {},
-    onSettingsClick: () -> Unit = {}
+    onSettingsClick: () -> Unit = {},
+    onCleanupAllAlbums: (() -> Unit)? = null
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val context = LocalContext.current
@@ -988,6 +993,7 @@ private fun AlbumsGridContent(
     val secondaryTextColor = if (isDarkTheme) Color(0xFF8E8E93) else Color(0xFF8E8E93)
 
     var showCreateDialog by remember { mutableStateOf(false) }
+    var showCleanupAllConfirm by remember { mutableStateOf(false) }
     
     // 简化后只显示 App 图集，移除了 Tab 切换功能
 
@@ -1152,24 +1158,87 @@ private fun AlbumsGridContent(
                         modifier = Modifier.align(Alignment.CenterStart)
                     )
                     
-                    // 右侧设置按钮 - 简化后只保留设置
+                    // 右侧按钮组
                     val buttonBgColor = if (isDarkTheme) TabulaColors.CatBlackLight else Color.White
                     val buttonIconColor = if (isDarkTheme) Color.White else TabulaColors.CatBlack
                     
-                    ActionIconButton(
-                        icon = Icons.Outlined.Settings,
-                        contentDescription = "设置",
-                        onClick = {
-                            com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                            onSettingsClick()
-                        },
-                        backgroundColor = buttonBgColor,
-                        iconColor = buttonIconColor,
-                        modifier = Modifier.align(Alignment.CenterEnd)
-                    )
+                    Row(
+                        modifier = Modifier.align(Alignment.CenterEnd),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // 清理旧图按钮（仅当有图集且有回调时显示）
+                        if (onCleanupAllAlbums != null && albums.isNotEmpty()) {
+                            ActionIconButton(
+                                icon = Icons.Outlined.Delete,
+                                contentDescription = "清理旧图",
+                                onClick = {
+                                    com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                                    showCleanupAllConfirm = true
+                                },
+                                backgroundColor = buttonBgColor,
+                                iconColor = buttonIconColor
+                            )
+                        }
+                        
+                        // 设置按钮
+                        ActionIconButton(
+                            icon = Icons.Outlined.Settings,
+                            contentDescription = "设置",
+                            onClick = {
+                                com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                                onSettingsClick()
+                            },
+                            backgroundColor = buttonBgColor,
+                            iconColor = buttonIconColor
+                        )
+                    }
                 }
             }
         }
+    }
+    
+    // 清理所有图集旧图确认对话框
+    if (showCleanupAllConfirm) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showCleanupAllConfirm = false },
+            containerColor = if (isDarkTheme) Color(0xFF1C1C1E) else Color.White,
+            title = {
+                Text(
+                    text = "清理所有旧图",
+                    color = if (isDarkTheme) Color.White else Color.Black,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "将删除所有图集中图片在旧位置的文件（包括原图和移动残留）。\n\n当前图集中的图片不受影响。已清理过的会自动跳过。",
+                    color = if (isDarkTheme) Color(0xFFAEAEB2) else Color(0xFF3C3C43)
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        onCleanupAllAlbums?.invoke()
+                        showCleanupAllConfirm = false
+                        com.tabula.v3.ui.util.HapticFeedback.mediumTap(context)
+                    }
+                ) {
+                    Text(
+                        text = "清理",
+                        color = Color(0xFFFF3B30),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showCleanupAllConfirm = false }) {
+                    Text(
+                        text = "取消",
+                        color = Color(0xFF007AFF)
+                    )
+                }
+            }
+        )
     }
 
     // 新建图集对话框
@@ -1217,8 +1286,13 @@ private fun AlbumsGrid(
         }
 
         items(albums) { album ->
-            // 尝试获取封面图片
+            // 尝试获取封面图片，如果在 imageMap 中找不到则用 coverImageId 构建 URI
             val coverImage = album.coverImageId?.let { imageMap[it] }
+            val coverUri = coverImage?.uri 
+                ?: album.coverImageId?.let { android.net.Uri.parse("content://media/external/images/media/$it") }
+            
+            // 跟踪图片加载状态
+            var loadFailed by remember { mutableStateOf(false) }
             
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -1238,18 +1312,19 @@ private fun AlbumsGrid(
                             color = if (isDarkTheme) Color(0xFF1C1C1E) else Color.White
                         )
                 ) {
-                   if (coverImage != null) {
+                   if (coverUri != null && !loadFailed) {
                        AsyncImage(
                            model = ImageRequest.Builder(context)
-                               .data(coverImage.uri)
+                               .data(coverUri)
                                .crossfade(true)
                                .build(),
                            contentDescription = null,
                            contentScale = ContentScale.Crop,
-                           modifier = Modifier.fillMaxSize()
+                           modifier = Modifier.fillMaxSize(),
+                           onError = { loadFailed = true }
                        )
                    } else {
-                       // 没有图片时的背景色
+                       // 没有图片或加载失败时的背景色
                        val albumColor = album.color?.let { Color(it) } ?: Color(0xFF7986CB)
                        Box(
                            modifier = Modifier

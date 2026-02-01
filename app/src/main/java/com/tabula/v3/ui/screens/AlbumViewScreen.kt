@@ -117,6 +117,7 @@ fun AlbumViewScreen(
     albums: List<Album>,
     allImages: List<ImageFile>,
     getImagesForAlbum: suspend (String) -> List<Long>,
+    getImageMappingsForAlbum: (suspend (String) -> List<Pair<Long, String>>)? = null,
     onCreateAlbum: (name: String, color: Long?, emoji: String?) -> Unit,
     onUpdateAlbum: (Album) -> Unit,
     onDeleteAlbum: (String) -> Unit,
@@ -127,10 +128,12 @@ fun AlbumViewScreen(
     playMotionSound: Boolean = false,
     motionSoundVolume: Int = 100,
     onMoveToAlbum: ((List<Long>, String) -> Unit)? = null,
-    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null
+    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null,
+    onCleanupAlbum: ((String) -> Unit)? = null
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val context = LocalContext.current
+    val contentResolver = context.contentResolver
 
     val backgroundColor = if (isDarkTheme) Color.Black else Color(0xFFF2F2F7)
     val textColor = if (isDarkTheme) Color.White else Color(0xFF1C1C1E)
@@ -150,8 +153,23 @@ fun AlbumViewScreen(
     // 加载图片逻辑
     LaunchedEffect(currentAlbum?.id, allImages) {
         if (currentAlbum != null) {
-            val imageIds = getImagesForAlbum(currentAlbum.id)
-            albumImages = allImages.filter { it.id in imageIds }
+            if (getImageMappingsForAlbum != null) {
+                // 使用新的加载方式：支持已清理原图的图片
+                val mappings = getImageMappingsForAlbum(currentAlbum.id)
+                albumImages = mappings.mapNotNull { (imageId, imageUri) ->
+                    // 先从 allImages 中查找
+                    allImages.find { it.id == imageId }
+                        ?: run {
+                            // 找不到则使用 URI 从 MediaStore 查询
+                            val uri = android.net.Uri.parse(imageUri)
+                            queryImageFromUri(contentResolver, uri)
+                        }
+                }
+            } else {
+                // 兼容旧的加载方式
+                val imageIds = getImagesForAlbum(currentAlbum.id)
+                albumImages = allImages.filter { it.id in imageIds }
+            }
         } else {
             albumImages = emptyList()
         }
@@ -198,7 +216,8 @@ fun AlbumViewScreen(
                 albums = albums,
                 allImages = allImages,
                 onMoveToAlbum = onMoveToAlbum,
-                onCopyToAlbum = onCopyToAlbum
+                onCopyToAlbum = onCopyToAlbum,
+                onCleanupAlbum = onCleanupAlbum
             )
         } else {
              // Loading state
@@ -269,7 +288,8 @@ private fun AlbumContentView(
     albums: List<Album> = emptyList(),
     allImages: List<ImageFile> = emptyList(),
     onMoveToAlbum: ((List<Long>, String) -> Unit)? = null,
-    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null
+    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null,
+    onCleanupAlbum: ((String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     var showMenu by remember { mutableStateOf(false) }
@@ -282,6 +302,9 @@ private fun AlbumContentView(
     // 图集选择弹窗状态
     var showAlbumPicker by remember { mutableStateOf(false) }
     var isCopyMode by remember { mutableStateOf(false) }  // true=复制, false=移动
+    
+    // 清理旧图确认弹窗状态
+    var showCleanupConfirm by remember { mutableStateOf(false) }
     
     // 退出多选模式
     fun exitSelectionMode() {
@@ -459,6 +482,41 @@ private fun AlbumContentView(
                                 },
                                 modifier = Modifier.padding(horizontal = 4.dp)
                             )
+                            
+                            // 清理旧图（仅当有图片且回调存在时显示）
+                            if (onCleanupAlbum != null && images.isNotEmpty()) {
+                                // 分隔线
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                                        .height(0.5.dp)
+                                        .background(secondaryTextColor.copy(alpha = 0.2f))
+                                )
+                                
+                                DropdownMenuItem(
+                                    text = { 
+                                        Text(
+                                            "清理旧图",
+                                            color = textColor,
+                                            fontWeight = FontWeight.Medium
+                                        ) 
+                                    },
+                                    onClick = {
+                                        showMenu = false
+                                        showCleanupConfirm = true
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Outlined.Delete,
+                                            contentDescription = null,
+                                            tint = secondaryTextColor,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    },
+                                    modifier = Modifier.padding(horizontal = 4.dp)
+                                )
+                            }
                             
                             // 分隔线
                             Box(
@@ -723,6 +781,50 @@ private fun AlbumContentView(
                 },
                 onDismiss = { showAlbumPicker = false },
                 isDarkTheme = isDarkTheme
+            )
+        }
+        
+        // 清理旧图确认对话框
+        if (showCleanupConfirm) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { showCleanupConfirm = false },
+                containerColor = if (isDarkTheme) Color(0xFF1C1C1E) else Color.White,
+                title = {
+                    Text(
+                        text = "清理旧图",
+                        color = if (isDarkTheme) Color.White else Color.Black,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Text(
+                        text = "将删除此图集中图片在旧位置的文件（包括原图和移动残留）。\n\n当前图集中的图片不受影响。已清理过的会自动跳过。",
+                        color = if (isDarkTheme) Color(0xFFAEAEB2) else Color(0xFF3C3C43)
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onCleanupAlbum?.invoke(album.id)
+                            showCleanupConfirm = false
+                            HapticFeedback.mediumTap(context)
+                        }
+                    ) {
+                        Text(
+                            text = "清理",
+                            color = Color(0xFFFF3B30),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showCleanupConfirm = false }) {
+                        Text(
+                            text = "取消",
+                            color = Color(0xFF007AFF)
+                        )
+                    }
+                }
             )
         }
     }
@@ -1165,6 +1267,56 @@ private fun AlbumPickerDialog(
                 }
             }
         }
+    }
+}
+
+/**
+ * 通过 URI 从 MediaStore 查询图片信息
+ * 用于加载已清理原图后同步到系统相册的图片
+ */
+private fun queryImageFromUri(
+    contentResolver: android.content.ContentResolver,
+    uri: android.net.Uri
+): ImageFile? {
+    return try {
+        val projection = arrayOf(
+            android.provider.MediaStore.Images.Media._ID,
+            android.provider.MediaStore.Images.Media.DISPLAY_NAME,
+            android.provider.MediaStore.Images.Media.DATE_MODIFIED,
+            android.provider.MediaStore.Images.Media.SIZE,
+            android.provider.MediaStore.Images.Media.WIDTH,
+            android.provider.MediaStore.Images.Media.HEIGHT,
+            android.provider.MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
+            android.provider.MediaStore.Images.Media.ORIENTATION
+        )
+        
+        contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val id = cursor.getLong(cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media._ID))
+                val displayName = cursor.getString(cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.DISPLAY_NAME)) ?: "Unknown"
+                val dateModified = cursor.getLong(cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.DATE_MODIFIED))
+                val size = cursor.getLong(cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.SIZE))
+                val width = cursor.getInt(cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.WIDTH))
+                val height = cursor.getInt(cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.HEIGHT))
+                val bucketName = cursor.getString(cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.BUCKET_DISPLAY_NAME))
+                val orientation = cursor.getInt(cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.ORIENTATION))
+                
+                ImageFile(
+                    id = id,
+                    uri = uri,
+                    displayName = displayName,
+                    dateModified = dateModified,
+                    size = size,
+                    width = width,
+                    height = height,
+                    bucketDisplayName = bucketName,
+                    orientation = orientation
+                )
+            } else null
+        }
+    } catch (e: Exception) {
+        android.util.Log.w("AlbumViewScreen", "Failed to query image from URI: $uri", e)
+        null
     }
 }
 

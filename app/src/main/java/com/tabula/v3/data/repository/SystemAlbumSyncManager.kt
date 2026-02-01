@@ -387,10 +387,66 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
     }
 
     /**
+     * 根据原始 URI 查找图片在系统相册中的新 URI
+     * 
+     * 当图片被同步（复制/移动）到系统相册后，原始 URI 可能已失效。
+     * 此方法通过文件名在指定相册中查找同步后的新 URI。
+     * 
+     * @param originalUri 原始图片 URI
+     * @param albumName 目标相册名称
+     * @return 系统相册中的新 URI，未找到则返回 null
+     */
+    fun findNewUriInSystemAlbum(originalUri: Uri, albumName: String): Uri? {
+        val fileName = getFileNameFromUri(originalUri)
+        if (fileName == null) {
+            Log.w(TAG, "Cannot get filename from URI: $originalUri")
+            return null
+        }
+        return findExistingImageInAlbum(albumName, fileName)
+    }
+
+    /**
+     * 批量查找图片在系统相册中的新 URI
+     * 
+     * @param originalUris 原始 URI 列表
+     * @param albumName 目标相册名称
+     * @return Map<原始URI字符串, 新URI>，只包含成功找到的映射
+     */
+    fun findNewUrisInSystemAlbum(originalUris: List<Uri>, albumName: String): Map<String, Uri> {
+        val result = mutableMapOf<String, Uri>()
+        var fileNameNotFound = 0
+        var imageNotFound = 0
+        
+        for (uri in originalUris) {
+            val fileName = getFileNameFromUri(uri)
+            if (fileName == null) {
+                fileNameNotFound++
+                Log.w(TAG, "Cannot get filename from URI (might be deleted): $uri")
+                continue
+            }
+            
+            val newUri = findExistingImageInAlbum(albumName, fileName)
+            if (newUri != null) {
+                result[uri.toString()] = newUri
+                Log.d(TAG, "Found new URI: $uri -> $newUri (file: $fileName)")
+            } else {
+                imageNotFound++
+                Log.w(TAG, "Image not found in system album '$albumName': $fileName")
+            }
+        }
+        
+        Log.d(TAG, "findNewUrisInSystemAlbum summary for '$albumName': found=${result.size}, fileNameNotFound=$fileNameNotFound, imageNotFound=$imageNotFound, total=${originalUris.size}")
+        return result
+    }
+
+    /**
      * 检查目标相册中是否已存在同名文件
      * 
      * 支持检查现有系统相册（如 DCIM/Camera）和 Tabula 创建的相册。
      * 同时检查文件名和文件大小，避免同步重复照片。
+     * 
+     * 注意：会同时查询原始相册名和清理后的相册名（safeName），
+     * 因为 BUCKET_DISPLAY_NAME 是文件夹名称，可能与原始相册名不同。
      * 
      * @param albumName 相册名称
      * @param fileName 文件名
@@ -403,38 +459,53 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
         sourceSize: Long? = null
     ): Uri? {
         try {
-            // 使用 BUCKET_DISPLAY_NAME 查询，这样可以同时覆盖现有系统相册和 Tabula 相册
-            val selection = "${MediaStore.Images.Media.BUCKET_DISPLAY_NAME} = ? AND ${MediaStore.Images.Media.DISPLAY_NAME} = ?"
-            val selectionArgs = arrayOf(albumName, fileName)
+            // 清理相册名中的特殊字符，与 getAlbumFolder() 保持一致
+            val safeName = albumName.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            
+            // 需要查询的 BUCKET_DISPLAY_NAME 列表：
+            // 1. 原始相册名（可能是现有系统相册）
+            // 2. 清理后的相册名（Tabula 创建的相册）
+            val bucketNames = if (safeName != albumName) {
+                listOf(albumName, safeName)
+            } else {
+                listOf(albumName)
+            }
             
             val projection = arrayOf(
                 MediaStore.Images.Media._ID,
                 MediaStore.Images.Media.SIZE
             )
             
-            contentResolver.query(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                projection,
-                selection,
-                selectionArgs,
-                null
-            )?.use { cursor ->
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
-                    
-                    // 如果提供了源文件大小，进行额外验证
-                    if (sourceSize != null) {
-                        val sizeIndex = cursor.getColumnIndex(MediaStore.Images.Media.SIZE)
-                        if (sizeIndex >= 0) {
-                            val existingSize = cursor.getLong(sizeIndex)
-                            // 文件大小相同，认为是同一张照片
-                            if (existingSize == sourceSize) {
-                                return Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
+            for (bucketName in bucketNames) {
+                val selection = "${MediaStore.Images.Media.BUCKET_DISPLAY_NAME} = ? AND ${MediaStore.Images.Media.DISPLAY_NAME} = ?"
+                val selectionArgs = arrayOf(bucketName, fileName)
+                
+                contentResolver.query(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    projection,
+                    selection,
+                    selectionArgs,
+                    null
+                )?.use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
+                        
+                        // 如果提供了源文件大小，进行额外验证
+                        if (sourceSize != null) {
+                            val sizeIndex = cursor.getColumnIndex(MediaStore.Images.Media.SIZE)
+                            if (sizeIndex >= 0) {
+                                val existingSize = cursor.getLong(sizeIndex)
+                                // 文件大小相同，认为是同一张照片
+                                if (existingSize == sourceSize) {
+                                    Log.d(TAG, "Found existing image in bucket '$bucketName': $fileName")
+                                    return Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
+                                }
                             }
+                        } else {
+                            // 没有提供大小，仅按文件名匹配
+                            Log.d(TAG, "Found existing image in bucket '$bucketName': $fileName")
+                            return Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
                         }
-                    } else {
-                        // 没有提供大小，仅按文件名匹配
-                        return Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
                     }
                 }
             }
@@ -449,6 +520,8 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
                     }
                 }
             }
+            
+            Log.d(TAG, "Image not found in album '$albumName' (also tried '$safeName'): $fileName")
         } catch (e: Exception) {
             Log.e(TAG, "Error finding existing image in album: $albumName/$fileName", e)
         }
@@ -686,7 +759,8 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
     data class SyncResultDetail(
         val newlySynced: Int,      // 新同步的图片数
         val alreadyExists: Int,    // 已存在跳过的图片数
-        val failed: Int            // 失败的图片数
+        val failed: Int,           // 失败的图片数
+        val uriMapping: Map<String, Uri> = emptyMap()  // 原URI字符串 -> 新URI 映射
     ) {
         val total get() = newlySynced + alreadyExists + failed
         val success get() = newlySynced + alreadyExists
@@ -699,7 +773,7 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
      * @param imageUris 图片 URI 列表
      * @param syncMode 同步模式：COPY 或 MOVE
      * @param onProgress 进度回调 (current, total)
-     * @return 同步结果详情
+     * @return 同步结果详情（包含 URI 映射，用于更新 AlbumMapping）
      */
     suspend fun syncAlbumToSystem(
         albumName: String,
@@ -710,6 +784,7 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
         var newlySynced = 0
         var alreadyExists = 0
         var failed = 0
+        val uriMapping = mutableMapOf<String, Uri>()  // 收集原URI -> 新URI 映射
 
         // 确保相册存在
         createSystemAlbum(albumName)
@@ -731,8 +806,9 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
             val existingUri = fileName?.let { findExistingImageInAlbum(albumName, it) }
             
             if (existingUri != null) {
-                // 已存在，跳过
+                // 已存在，记录映射（原URI -> 已存在的URI）
                 alreadyExists++
+                uriMapping[uri.toString()] = existingUri
                 // #region agent log
                 Log.d("DEBUG_SYNC", "[B1,B2] Image sync result | index=$index | fileName=$fileName | status=skipped | existingUri=$existingUri")
                 // #endregion
@@ -745,6 +821,7 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
                 
                 if (result != null) {
                     newlySynced++
+                    uriMapping[uri.toString()] = result  // 记录映射（原URI -> 新URI）
                     // #region agent log
                     Log.d("DEBUG_SYNC", "[B1,B2] Image sync result | index=$index | fileName=$fileName | status=synced | resultUri=$result")
                     // #endregion
@@ -758,7 +835,7 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
         }
 
         val modeText = if (syncMode == SyncMode.MOVE) "moved" else "copied"
-        Log.d(TAG, "Synced album '$albumName': newlySynced=$newlySynced, alreadyExists=$alreadyExists, failed=$failed ($modeText)")
+        Log.d(TAG, "Synced album '$albumName': newlySynced=$newlySynced, alreadyExists=$alreadyExists, failed=$failed, mappings=${uriMapping.size} ($modeText)")
         
         // 更新最后一张图片（封面）的 DATE_MODIFIED，确保它在系统相册中显示为封面
         // 系统相册按 DATE_MODIFIED DESC 选择封面
@@ -769,7 +846,7 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
             }
         }
         
-        SyncResultDetail(newlySynced, alreadyExists, failed)
+        SyncResultDetail(newlySynced, alreadyExists, failed, uriMapping)
     }
     
     /**

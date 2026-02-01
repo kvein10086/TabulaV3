@@ -96,7 +96,7 @@ fun StatisticsScreen(
             .fillMaxSize()
             .background(backgroundColor)
             .statusBarsPadding()
-            .navigationBarsPadding()
+            // navigationBarsPadding 移到内容底部，实现沉浸式效果
     ) {
         // ========== 顶部栏 ==========
         Box(
@@ -234,7 +234,8 @@ fun StatisticsScreen(
                 style = MaterialTheme.typography.labelMedium,
                 color = secondaryTextColor.copy(alpha = 0.5f)
             )
-            Spacer(modifier = Modifier.height(20.dp))
+            // 底部留出导航栏空间，实现沉浸式效果
+            Spacer(modifier = Modifier.height(20.dp).navigationBarsPadding())
         }
     }
 }
