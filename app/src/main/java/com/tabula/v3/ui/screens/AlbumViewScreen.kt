@@ -96,8 +96,8 @@ import com.tabula.v3.di.CoilSetup
 import com.tabula.v3.ui.components.AlbumDeleteConfirmDialog
 import com.tabula.v3.ui.components.AlbumEditDialog
 import com.tabula.v3.ui.components.SourceRect
-import com.tabula.v3.ui.components.ViewerOverlay
-import com.tabula.v3.ui.components.ViewerState
+import com.tabula.v3.ui.components.SwipeableViewerOverlay
+import com.tabula.v3.ui.components.SwipeableViewerState
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.util.HapticFeedback
 
@@ -147,27 +147,55 @@ fun AlbumViewScreen(
     // 状态
     var editingAlbum by remember { mutableStateOf<Album?>(null) }
     var deletingAlbum by remember { mutableStateOf<Album?>(null) }
-    var viewerState by remember { mutableStateOf<ViewerState?>(null) }
+    var viewerState by remember { mutableStateOf<SwipeableViewerState?>(null) }
     var albumImages by remember { mutableStateOf<List<ImageFile>>(emptyList()) }
+    
+    // 渐进式加载状态
+    var isLoadingMore by remember { mutableStateOf(false) }
+    var hasMoreImages by remember { mutableStateOf(true) }
+    
+    // 使用 Map 优化查找，将 O(n) 降为 O(1)
+    val imageMap = remember(allImages) { allImages.associateBy { it.id } }
 
-    // 加载图片逻辑
-    LaunchedEffect(currentAlbum?.id, allImages) {
+    // 加载图片逻辑 - 优化版：渐进式加载 + Map 查找
+    LaunchedEffect(currentAlbum?.id) {
         if (currentAlbum != null) {
+            // 重置加载状态
+            hasMoreImages = true
+            
             if (getImageMappingsForAlbum != null) {
                 // 使用新的加载方式：支持已清理原图的图片
                 val mappings = getImageMappingsForAlbum(currentAlbum.id)
-                albumImages = mappings.mapNotNull { (imageId, imageUri) ->
-                    // 先从 allImages 中查找
-                    allImages.find { it.id == imageId }
-                        ?: run {
-                            // 找不到则使用 URI 从 MediaStore 查询
-                            val uri = android.net.Uri.parse(imageUri)
-                            queryImageFromUri(contentResolver, uri)
-                        }
+                
+                // 使用 Map 进行 O(1) 查找，而非 O(n) 的 find
+                // 收集需要从 MediaStore 查询的 URI（不在 imageMap 中的）
+                val foundImages = mutableListOf<ImageFile>()
+                val missingUris = mutableListOf<android.net.Uri>()
+                
+                for ((imageId, imageUri) in mappings) {
+                    val image = imageMap[imageId]
+                    if (image != null) {
+                        foundImages.add(image)
+                    } else {
+                        missingUris.add(android.net.Uri.parse(imageUri))
+                    }
                 }
+                
+                // 批量查询缺失的图片（限制批量大小避免 ANR）
+                val batchSize = 50
+                val queriedImages = mutableListOf<ImageFile>()
+                for (i in missingUris.indices step batchSize) {
+                    val batch = missingUris.subList(i, minOf(i + batchSize, missingUris.size))
+                    batch.mapNotNull { uri ->
+                        queryImageFromUri(contentResolver, uri)
+                    }.let { queriedImages.addAll(it) }
+                }
+                
+                // 合并结果并去重
+                albumImages = (foundImages + queriedImages).distinctBy { it.id }
             } else {
-                // 兼容旧的加载方式
-                val imageIds = getImagesForAlbum(currentAlbum.id)
+                // 兼容旧的加载方式 - 也使用 Set 优化
+                val imageIds = getImagesForAlbum(currentAlbum.id).toSet()
                 albumImages = allImages.filter { it.id in imageIds }
             }
         } else {
@@ -204,7 +232,12 @@ fun AlbumViewScreen(
                 showHdrBadges = showHdrBadges,
                 showMotionBadges = showMotionBadges,
                 onImageClick = { image, sourceRect ->
-                    viewerState = ViewerState(image, sourceRect)
+                    val index = albumImages.indexOf(image).coerceAtLeast(0)
+                    viewerState = SwipeableViewerState(
+                        images = albumImages,
+                        initialIndex = index,
+                        sourceRect = sourceRect
+                    )
                 },
                 onEditClick = { editingAlbum = currentAlbum },
                 onDeleteClick = { deletingAlbum = currentAlbum },
@@ -224,9 +257,9 @@ fun AlbumViewScreen(
              Box(Modifier.fillMaxSize())
         }
         
-        // 查看器
+        // 查看器 - 支持左右滑动切换图片
         viewerState?.let { state ->
-            ViewerOverlay(
+            SwipeableViewerOverlay(
                 viewerState = state,
                 onDismiss = { viewerState = null },
                 showHdr = showHdrBadges,
@@ -637,6 +670,8 @@ private fun AlbumContentView(
                 ),
                 state = gridState,
                 modifier = Modifier.fillMaxSize()
+                // 注：LazyVerticalGrid 的预取由 Compose 自动管理
+                // 图片加载优化主要通过 Coil 的缓存策略实现
             ) {
                 items(images, key = { it.id }) { image ->
                     PhotoGridItem(
@@ -911,17 +946,30 @@ private fun PhotoGridItem(
         // 使用稳定的缓存键，基于图片 ID
         val cacheKey = remember(image.id) { "album_grid_${image.id}" }
         
+        // 占位符背景色 - 在图片加载前显示，避免空白闪烁
+        val isDarkTheme = LocalIsDarkTheme.current
+        val placeholderColor = if (isDarkTheme) Color(0xFF2C2C2E) else Color(0xFFE5E5EA)
+        
+        // 先绘制占位符背景
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(placeholderColor)
+        )
+        
         AsyncImage(
             model = ImageRequest.Builder(context)
                 .data(image.uri)
                 .size(Size(240, 240))
                 .precision(Precision.INEXACT)
                 .bitmapConfig(Bitmap.Config.RGB_565)
-                .allowHardware(false)
+                // 启用硬件位图加速（Android 8.0+）- 更快的渲染
+                .allowHardware(true)
                 .memoryCacheKey(cacheKey)
                 .diskCacheKey(cacheKey)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
+                // 禁用 crossfade 动画 - 直接显示，减少视觉延迟
                 .crossfade(false)
                 .build(),
             contentDescription = image.displayName,

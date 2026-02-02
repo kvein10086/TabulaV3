@@ -89,7 +89,8 @@ fun CategorizedAlbumsView(
     listState: LazyListState = rememberLazyListState(),
     topPadding: Dp = 100.dp, // 顶部内边距
     headerContent: (@Composable () -> Unit)? = null,
-    userScrollEnabled: Boolean = true
+    userScrollEnabled: Boolean = true,
+    disableImageLoading: Boolean = false  // 禁用图片加载（用于模糊层，避免双重加载）
 ) {
     val context = LocalContext.current
     val imageMap = remember(allImages) { allImages.associateBy { it.id } }
@@ -170,7 +171,8 @@ fun CategorizedAlbumsView(
                         textColor = textColor,
                         secondaryTextColor = secondaryTextColor,
                         isDarkTheme = isDarkTheme,
-                        lazyListState = listState
+                        lazyListState = listState,
+                        disableImageLoading = disableImageLoading
                     )
                 }
             } else {
@@ -200,7 +202,8 @@ fun CategorizedAlbumsView(
                                 onClick = { onAppAlbumClick(album) },
                                 textColor = textColor,
                                 secondaryTextColor = secondaryTextColor,
-                                isDarkTheme = isDarkTheme
+                                isDarkTheme = isDarkTheme,
+                                disableImageLoading = disableImageLoading
                             )
                         }
                     }
@@ -321,7 +324,8 @@ private fun AppAlbumCard(
     onClick: () -> Unit,
     textColor: Color,
     secondaryTextColor: Color,
-    isDarkTheme: Boolean
+    isDarkTheme: Boolean,
+    disableImageLoading: Boolean = false  // 禁用图片加载（用于模糊层）
 ) {
     val context = LocalContext.current
 
@@ -348,11 +352,26 @@ private fun AppAlbumCard(
                 .clip(RoundedCornerShape(16.dp))
                 .background(if (isDarkTheme) Color(0xFF1C1C1E) else Color.White)
         ) {
-            if (coverUri != null && !loadFailed) {
+            if (disableImageLoading) {
+                // 模糊层：只显示灰色占位块，不加载图片
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(if (isDarkTheme) Color(0xFF2C2C2E) else Color(0xFFE5E5EA))
+                )
+            } else if (coverUri != null && !loadFailed) {
+                // 封面缓存键 - 使用小缩略图，点进相册后再加载原图
+                val coverCacheKey = remember(album.id) { "album_thumb_${album.id}" }
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(coverUri)
-                        .crossfade(true)
+                        .size(coil.size.Size(180, 180))  // 小缩略图足够显示封面
+                        .precision(coil.size.Precision.INEXACT)
+                        .bitmapConfig(android.graphics.Bitmap.Config.RGB_565)  // 省一半内存
+                        .memoryCacheKey(coverCacheKey)
+                        .diskCacheKey(coverCacheKey)
+                        .allowHardware(true)
+                        .crossfade(false)  // 直接显示，无动画
                         .build(),
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
@@ -364,7 +383,7 @@ private fun AppAlbumCard(
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(R.drawable.zpcat1)
-                        .crossfade(true)
+                        .crossfade(80)
                         .build(),
                     contentDescription = "空图集封面",
                     contentScale = ContentScale.Crop,
@@ -405,7 +424,8 @@ private fun AppAlbumGridCard(
     textColor: Color,
     secondaryTextColor: Color,
     isDarkTheme: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    disableImageLoading: Boolean = false  // 禁用图片加载（用于模糊层）
 ) {
     val context = LocalContext.current
     
@@ -432,11 +452,26 @@ private fun AppAlbumGridCard(
                 .clip(RoundedCornerShape(12.dp))  // 3列布局圆角稍小
                 .background(if (isDarkTheme) Color(0xFF1C1C1E) else Color.White)
         ) {
-            if (coverUri != null && !loadFailed) {
+            if (disableImageLoading) {
+                // 模糊层：只显示灰色占位块，不加载图片
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(if (isDarkTheme) Color(0xFF2C2C2E) else Color(0xFFE5E5EA))
+                )
+            } else if (coverUri != null && !loadFailed) {
+                // 封面缓存键 - 使用小缩略图，点进相册后再加载原图
+                val coverCacheKey = remember(album.id) { "album_thumb_grid_${album.id}" }
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(coverUri)
-                        .crossfade(true)
+                        .size(coil.size.Size(150, 150))  // 小缩略图，3列布局够用
+                        .precision(coil.size.Precision.INEXACT)
+                        .bitmapConfig(android.graphics.Bitmap.Config.RGB_565)  // 省一半内存
+                        .memoryCacheKey(coverCacheKey)
+                        .diskCacheKey(coverCacheKey)
+                        .allowHardware(true)
+                        .crossfade(false)  // 直接显示，无动画
                         .build(),
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
@@ -448,7 +483,7 @@ private fun AppAlbumGridCard(
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(R.drawable.zpcat1)
-                        .crossfade(true)
+                        .crossfade(80)
                         .build(),
                     contentDescription = "空图集封面",
                     contentScale = ContentScale.Crop,
@@ -695,11 +730,24 @@ private fun DraggableAlbumsGridInternal(
     textColor: Color,
     secondaryTextColor: Color,
     isDarkTheme: Boolean,
-    lazyListState: LazyListState
+    lazyListState: LazyListState,
+    disableImageLoading: Boolean = false  // 禁用图片加载（用于模糊层）
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
+    
+    // ========== 本地排序状态 ==========
+    // 维护本地排序列表，避免拖拽结束后等待 StateFlow 更新导致 UI "跳回"
+    var orderedAlbums by remember { mutableStateOf(albums) }
+    
+    // 监听外部 albums 变化并同步到本地状态（仅在非拖拽状态下更新）
+    // 使用 albums 的 ID 列表作为 key，避免仅 order 变化时不必要的重置
+    val albumIds = remember(albums) { albums.map { it.id }.toSet() }
+    LaunchedEffect(albumIds) {
+        // 外部 albums 的成员发生变化（新增/删除），需要同步
+        orderedAlbums = albums
+    }
     
     // 拖拽状态
     var draggingAlbumId by remember { mutableStateOf<String?>(null) }
@@ -825,8 +873,8 @@ private fun DraggableAlbumsGridInternal(
         var newCol = startCol + colOffset
         var newRow = startRow + rowOffset
         
-        // 计算总网格项数（包括新建按钮）
-        val totalGridItems = albums.size + gridOffset
+        // 计算总网格项数（包括新建按钮）- 使用本地排序列表
+        val totalGridItems = orderedAlbums.size + gridOffset
         val maxRow = (totalGridItems - 1) / columnsPerRow
         
         // 限制行范围
@@ -840,8 +888,9 @@ private fun DraggableAlbumsGridInternal(
             newGridIndex = 1
         }
         
-        // 确保不超过最后一个图集的位置
-        val maxGridIndex = albums.lastIndex + gridOffset
+        // 确保不超过最后一个图集的位置 - 使用本地排序列表
+        // 防止空列表时 lastIndex 为 -1 导致 coerceIn 崩溃
+        val maxGridIndex = orderedAlbums.lastIndex.coerceAtLeast(0) + gridOffset
         newGridIndex = newGridIndex.coerceIn(gridOffset, maxGridIndex)
         
         // 转换回 albumIndex
@@ -900,8 +949,8 @@ private fun DraggableAlbumsGridInternal(
     Column(
         modifier = Modifier.fillMaxWidth()
     ) {
-        // 按行显示
-        val totalItems = if (hasCreateButton) albums.size + 1 else albums.size
+        // 按行显示 - 使用本地排序列表
+        val totalItems = if (hasCreateButton) orderedAlbums.size + 1 else orderedAlbums.size
         val rowCount = (totalItems + columnsPerRow - 1) / columnsPerRow
         
         for (rowIndex in 0 until rowCount) {
@@ -925,11 +974,11 @@ private fun DraggableAlbumsGridInternal(
                             modifier = Modifier.weight(1f)
                         )
                     } else {
-                        // 图集卡片
+                        // 图集卡片 - 使用本地排序列表
                         val albumIndex = if (hasCreateButton) itemIndex - 1 else itemIndex
                         
-                        if (albumIndex in albums.indices) {
-                            val album = albums[albumIndex]
+                        if (albumIndex in orderedAlbums.indices) {
+                            val album = orderedAlbums[albumIndex]
                             
                             // 使用 key 让 Compose 正确跟踪每个卡片（避免列表重排时动画状态混乱）
                             androidx.compose.runtime.key(album.id) {
@@ -1016,7 +1065,19 @@ private fun DraggableAlbumsGridInternal(
                                                 // 停止自动滚动
                                                 currentTouchScreenY = 0f
                                                 
-                                                // 立即重置所有拖拽状态（避免列表重排后的视觉跳动）
+                                                // 如果位置变化了，重新排序
+                                                if (targetIdx != startIdx && targetIdx >= 0) {
+                                                    // 先更新本地状态，确保 UI 立即显示新顺序
+                                                    val newList = orderedAlbums.toMutableList()
+                                                    val item = newList.removeAt(startIdx)
+                                                    newList.add(targetIdx, item)
+                                                    orderedAlbums = newList  // 立即更新本地状态
+                                                    
+                                                    // 再通知外部保存（异步操作不影响 UI）
+                                                    onReorder(newList.map { it.id })
+                                                }
+                                                
+                                                // 重置所有拖拽状态
                                                 draggingAlbumId = null
                                                 draggingStartIndex = -1
                                                 currentTargetIndex = -1
@@ -1024,14 +1085,6 @@ private fun DraggableAlbumsGridInternal(
                                                 dragOffsetY = 0f
                                                 rawDragOffsetY = 0f
                                                 onDraggingChange(false)
-                                                
-                                                // 如果位置变化了，重新排序并保存
-                                                if (targetIdx != startIdx && targetIdx >= 0) {
-                                                    val newList = albums.toMutableList()
-                                                    val item = newList.removeAt(startIdx)
-                                                    newList.add(targetIdx, item)
-                                                    onReorder(newList.map { it.id })
-                                                }
                                             },
                                             onDragCancel = {
                                                 // 停止自动滚动
@@ -1073,7 +1126,8 @@ private fun DraggableAlbumsGridInternal(
                                     textColor = textColor,
                                     secondaryTextColor = secondaryTextColor,
                                     isDarkTheme = isDarkTheme,
-                                    modifier = Modifier.fillMaxWidth()
+                                    modifier = Modifier.fillMaxWidth(),
+                                    disableImageLoading = disableImageLoading
                                 )
                             }
                             }  // 关闭 key 块

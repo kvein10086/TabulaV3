@@ -51,6 +51,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -110,6 +111,7 @@ import com.tabula.v3.ui.theme.TabulaColors
 import com.tabula.v3.ui.util.HapticFeedback
 import com.tabula.v3.ui.components.quickaction.QuickActionButton
 import com.tabula.v3.ui.components.quickaction.rememberSafeArea
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -173,6 +175,7 @@ fun DeckScreen(
     // 新建图集并归档图片（用于下滑归类时选择"新建"的场景）
     onCreateAlbumAndClassify: (name: String, color: Long?, emoji: String?, ImageFile) -> Unit = { _, _, _, _ -> },
     onUndoAlbumAction: () -> Unit = {},
+    onCommitArchive: () -> Unit = {},  // Snackbar 消失时提交归档
     onReorderAlbums: (List<String>) -> Unit = {},
     onSystemBucketClick: (String) -> Unit = {},
     onSyncClick: () -> Unit = {},
@@ -384,7 +387,8 @@ fun DeckScreen(
                                 if (newIndex > currentIndex) {
                                     onKeep()
                                 }
-                                currentIndex = newIndex.coerceIn(0, currentBatch.lastIndex)
+                                // 防止空列表时 lastIndex 为 -1 导致 coerceIn 崩溃
+                                currentIndex = newIndex.coerceIn(0, currentBatch.lastIndex.coerceAtLeast(0))
                             }
                         },
                         onRemove = { image ->
@@ -541,7 +545,7 @@ fun DeckScreen(
             visible = showUndoSnackbar,
             message = undoMessage,
             onUndo = {
-                // 执行数据层撤销
+                // 执行数据层撤销（取消待执行的归档操作）
                 onUndoAlbumAction()
                 
                 // 恢复 UI 状态
@@ -571,7 +575,11 @@ fun DeckScreen(
                 showUndoSnackbar = false
             },
             onDismiss = { 
-                // Snackbar 消失时清理撤销状态
+                // Snackbar 超时消失 = 用户确认归档
+                // 执行真正的复制操作
+                onCommitArchive()
+                
+                // 清理撤销状态
                 lastClassifiedImage = null
                 lastClassifiedIndex = -1
                 showUndoSnackbar = false 
@@ -999,10 +1007,10 @@ private fun AlbumsGridContent(
 
     // 内容层的滚动状态
     val listState = rememberLazyListState()
-    // 模糊层使用独立的 listState，固定在初始位置不滚动
-    // 这样模糊层只渲染顶部的几个项目，避免双重渲染导致的 ANR
-    val blurListState = rememberLazyListState()
     var topBarHeight by remember { mutableStateOf(0.dp) }
+    
+    // 移除延迟渲染：之前的 100ms 延迟会导致切换时先显示空白再显示内容，造成卡顿感
+    // 现在直接渲染内容，配合 AnimatedContent 的渐变动画即可平滑过渡
     
     // 滚动折叠阈值
     val collapseThreshold = 40.dp
@@ -1054,16 +1062,24 @@ private fun AlbumsGridContent(
             .background(backgroundColor)
     ) {
         // 1. Blurred backdrop (top bar region only)
-        // 模糊层使用独立的 blurListState，固定在初始位置不滚动
-        // 这样模糊层只渲染顶部的几个项目，避免与内容层双重渲染导致图片加载任务翻倍触发 ANR
+        // 使用简化的纯色模糊背景，不再渲染复杂的 CategorizedAlbumsView
+        // 原因：DraggableAlbumsGridInternal 组件太复杂（拖拽、动画），双重渲染会导致跳帧
         Box(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
                 .height(topBarVisibleHeight)
                 .clipToBounds()
-        ) {
-            CategorizedAlbumsView(
+                .background(
+                    if (isDarkTheme) Color(0xFF1C1C1E).copy(alpha = 0.8f)
+                    else Color.White.copy(alpha = 0.8f)
+                )
+                .blur(blurRadius, edgeTreatment = BlurredEdgeTreatment.Unbounded)
+        )
+
+        // 2. Content area (base)
+        // 直接渲染内容，AnimatedContent 的渐变动画会处理过渡效果
+        CategorizedAlbumsView(
                 appAlbums = albums,
                 systemBuckets = null,  // 简化：只显示 App 图集
                 allImages = allImages,
@@ -1075,35 +1091,11 @@ private fun AlbumsGridContent(
                 secondaryTextColor = secondaryTextColor,
                 isDarkTheme = isDarkTheme,
                 hideHeaders = true,  // 只有 App 图集，不需要分类标题
-                listState = blurListState,
+                listState = listState,
                 topPadding = contentTopPadding,
                 headerContent = null,
-                userScrollEnabled = false,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .offset(y = -contentTopPadding)
-                    .blur(blurRadius, edgeTreatment = BlurredEdgeTreatment.Unbounded)
+                userScrollEnabled = true
             )
-        }
-
-        // 2. Content area (base)
-        CategorizedAlbumsView(
-            appAlbums = albums,
-            systemBuckets = null,  // 简化：只显示 App 图集
-            allImages = allImages,
-            onAppAlbumClick = onAlbumClick,
-            onSystemBucketClick = onSystemBucketClick,
-            onReorderAlbums = onReorderAlbums,
-            onCreateAlbumClick = { showCreateDialog = true },
-            textColor = textColor,
-            secondaryTextColor = secondaryTextColor,
-            isDarkTheme = isDarkTheme,
-            hideHeaders = true,  // 只有 App 图集，不需要分类标题
-            listState = listState,
-            topPadding = contentTopPadding,
-            headerContent = null,
-            userScrollEnabled = true
-        )
 
         // ========== 3. 浮动毛玻璃导航栏 ==========
         // 简洁设计：从下到上的渐变 + 磨砂模糊质感

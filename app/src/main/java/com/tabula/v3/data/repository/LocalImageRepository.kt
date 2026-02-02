@@ -114,24 +114,32 @@ class LocalImageRepository(private val context: Context) {
 
     /**
      * 系统相册信息
+     * 
+     * @param name 相册名称（BUCKET_DISPLAY_NAME）
+     * @param imageCount 图片数量
+     * @param coverImageId 封面图片 ID（最新的一张）
+     * @param relativePath 相对路径（如 "DCIM/Camera"），用于创建同名文件夹
      */
     data class SystemBucket(
         val name: String,
         val imageCount: Int,
-        val coverImageId: Long? = null
+        val coverImageId: Long? = null,
+        val relativePath: String? = null
     )
 
     /**
      * 获取所有系统相册及其图片数量
      *
-     * @return 系统相册列表（包含名称、数量、封面）
+     * @return 系统相册列表（包含名称、数量、封面、路径）
      */
     suspend fun getAllBucketsWithInfo(): List<SystemBucket> = withContext(Dispatchers.IO) {
-        val bucketMap = mutableMapOf<String, MutableList<Long>>()
+        // 存储 bucket 信息：名称 -> (图片ID列表, 相对路径)
+        val bucketMap = mutableMapOf<String, Pair<MutableList<Long>, String?>>()
 
         val projection = arrayOf(
             MediaStore.Images.Media._ID,
-            MediaStore.Images.Media.BUCKET_DISPLAY_NAME
+            MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
+            MediaStore.Images.Media.RELATIVE_PATH
         )
 
         contentResolver.query(
@@ -145,19 +153,29 @@ class LocalImageRepository(private val context: Context) {
             val bucketColumn = cursor.getColumnIndexOrThrow(
                 MediaStore.Images.Media.BUCKET_DISPLAY_NAME
             )
+            val pathColumn = cursor.getColumnIndex(MediaStore.Images.Media.RELATIVE_PATH)
 
             while (cursor.moveToNext()) {
                 val bucketName = cursor.getString(bucketColumn) ?: continue
                 val imageId = cursor.getLong(idColumn)
-                bucketMap.getOrPut(bucketName) { mutableListOf() }.add(imageId)
+                val relativePath = if (pathColumn >= 0) cursor.getString(pathColumn) else null
+                
+                val existing = bucketMap[bucketName]
+                if (existing != null) {
+                    existing.first.add(imageId)
+                } else {
+                    bucketMap[bucketName] = Pair(mutableListOf(imageId), relativePath)
+                }
             }
         }
 
-        bucketMap.map { (name, ids) ->
+        bucketMap.map { (name, data) ->
+            val (ids, path) = data
             SystemBucket(
                 name = name,
                 imageCount = ids.size,
-                coverImageId = ids.firstOrNull() // 最新的一张作为封面
+                coverImageId = ids.firstOrNull(), // 最新的一张作为封面
+                relativePath = path?.trimEnd('/') // 移除末尾斜杠
             )
         }.sortedByDescending { it.imageCount }
     }

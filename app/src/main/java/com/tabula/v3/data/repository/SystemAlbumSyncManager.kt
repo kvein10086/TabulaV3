@@ -887,4 +887,165 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
         SyncMode.COPY -> addImageToSystemAlbum(imageUri, albumName)
         SyncMode.MOVE -> moveImageToSystemAlbum(imageUri, albumName)
     }
+
+    // ========== 直接操作系统相册（图库集成） ==========
+
+    /**
+     * 移动图片到指定的系统相册（bucket）
+     * 
+     * 这是图库与系统相册直接集成的核心方法。
+     * 图片的 BUCKET_DISPLAY_NAME 由其所在文件夹决定，移动图片就是改变其所属相册。
+     * 
+     * @param imageUri 源图片 URI
+     * @param targetBucketName 目标相册名称
+     * @param targetRelativePath 目标相对路径（可选，如 "DCIM/Camera"，不提供则使用 Pictures/Tabula/{name}）
+     * @return 移动后的新 URI，失败返回 null
+     */
+    suspend fun moveImageToBucket(
+        imageUri: Uri,
+        targetBucketName: String,
+        targetRelativePath: String? = null
+    ): Uri? = withContext(Dispatchers.IO) {
+        try {
+            val fileName = getFileNameFromUri(imageUri) ?: "IMG_${System.currentTimeMillis()}.jpg"
+            
+            // 确定目标路径
+            val finalRelativePath = targetRelativePath 
+                ?: getAlbumRelativePath(targetBucketName)
+            
+            Log.d(TAG, "Moving image to bucket: $targetBucketName, path: $finalRelativePath")
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Android 10+：使用 MediaStore 更新 RELATIVE_PATH
+                val updateValues = ContentValues().apply {
+                    put(MediaStore.Images.Media.RELATIVE_PATH, finalRelativePath)
+                    put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                }
+                
+                val updated = contentResolver.update(imageUri, updateValues, null, null)
+                if (updated > 0) {
+                    Log.d(TAG, "Moved image using MediaStore update: $fileName -> $finalRelativePath")
+                    // 返回更新后的 URI（同一个 URI，但路径已变）
+                    return@withContext imageUri
+                }
+                
+                // 更新失败，尝试复制后删除
+                Log.w(TAG, "MediaStore update failed, trying copy+delete")
+                val newUri = copyImageToPath(imageUri, finalRelativePath, fileName)
+                if (newUri != null) {
+                    deleteOriginalImage(imageUri)
+                    return@withContext newUri
+                }
+            } else {
+                // Android 9 及以下：直接文件操作
+                val targetFolder = getAlbumFolder(targetBucketName)
+                val newUri = copyImageDirectly(imageUri, targetFolder, fileName)
+                if (newUri != null) {
+                    deleteOriginalImage(imageUri)
+                    return@withContext newUri
+                }
+            }
+            
+            Log.e(TAG, "Failed to move image to bucket: $targetBucketName")
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error moving image to bucket: $targetBucketName", e)
+            null
+        }
+    }
+
+    /**
+     * 复制图片到指定路径
+     */
+    private fun copyImageToPath(
+        sourceUri: Uri,
+        targetRelativePath: String,
+        fileName: String
+    ): Uri? {
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                put(MediaStore.Images.Media.MIME_TYPE, getMimeType(fileName))
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Images.Media.RELATIVE_PATH, targetRelativePath)
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+            }
+
+            val newUri = contentResolver.insert(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                values
+            ) ?: return null
+
+            contentResolver.openInputStream(sourceUri)?.use { input ->
+                contentResolver.openOutputStream(newUri)?.use { output ->
+                    input.copyTo(output)
+                }
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val updateValues = ContentValues().apply {
+                    put(MediaStore.Images.Media.IS_PENDING, 0)
+                }
+                contentResolver.update(newUri, updateValues, null, null)
+            }
+
+            return newUri
+        } catch (e: Exception) {
+            Log.e(TAG, "Error copying image to path: $targetRelativePath", e)
+            return null
+        }
+    }
+
+    /**
+     * 创建新的系统相册（文件夹）并返回其相对路径
+     * 
+     * @param albumName 相册名称
+     * @return 创建的相册相对路径（如 "Pictures/Tabula/旅行"）
+     */
+    suspend fun createBucket(albumName: String): String? = withContext(Dispatchers.IO) {
+        try {
+            // 使用默认路径创建
+            val relativePath = getAlbumRelativePath(albumName)
+            val albumFolder = getAlbumFolder(albumName, useExistingPath = false)
+            
+            if (!albumFolder.exists()) {
+                val created = albumFolder.mkdirs()
+                if (!created) {
+                    Log.e(TAG, "Failed to create bucket folder: ${albumFolder.absolutePath}")
+                    return@withContext null
+                }
+            }
+
+            // 创建占位文件确保文件夹被 MediaStore 识别
+            val placeholder = File(albumFolder, ".nomedia_placeholder")
+            if (!placeholder.exists()) {
+                placeholder.createNewFile()
+                // 立即删除，只是为了确保文件夹被创建
+                placeholder.delete()
+            }
+
+            Log.d(TAG, "Created bucket: $albumName at $relativePath")
+            relativePath
+        } catch (e: Exception) {
+            Log.e(TAG, "Error creating bucket: $albumName", e)
+            null
+        }
+    }
+
+    /**
+     * 获取图片当前所属的 bucket 名称
+     */
+    fun getImageBucketName(imageUri: Uri): String? {
+        val projection = arrayOf(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
+        contentResolver.query(imageUri, projection, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val bucketColumn = cursor.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
+                if (bucketColumn >= 0) {
+                    return cursor.getString(bucketColumn)
+                }
+            }
+        }
+        return null
+    }
 }

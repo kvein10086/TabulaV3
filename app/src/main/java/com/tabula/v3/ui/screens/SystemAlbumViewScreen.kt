@@ -50,8 +50,8 @@ import coil.size.Size
 import com.tabula.v3.data.model.ImageFile
 import com.tabula.v3.di.CoilSetup
 import com.tabula.v3.ui.components.SourceRect
-import com.tabula.v3.ui.components.ViewerOverlay
-import com.tabula.v3.ui.components.ViewerState
+import com.tabula.v3.ui.components.SwipeableViewerOverlay
+import com.tabula.v3.ui.components.SwipeableViewerState
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.util.HapticFeedback
 import androidx.compose.foundation.clickable
@@ -79,7 +79,7 @@ fun SystemAlbumViewScreen(
     val textColor = if (isDarkTheme) Color.White else Color(0xFF1C1C1E)
     val secondaryTextColor = if (isDarkTheme) Color(0xFF8E8E93) else Color(0xFF8E8E93)
 
-    var viewerState by remember { mutableStateOf<ViewerState?>(null) }
+    var viewerState by remember { mutableStateOf<SwipeableViewerState?>(null) }
     val gridState = rememberLazyGridState()
 
     // 返回拦截
@@ -150,16 +150,21 @@ fun SystemAlbumViewScreen(
                         showHdrBadge = showHdrBadges,
                         showMotionBadge = showMotionBadges,
                         onClick = { sourceRect ->
-                            viewerState = ViewerState(image, sourceRect)
+                            val index = images.indexOf(image).coerceAtLeast(0)
+                            viewerState = SwipeableViewerState(
+                                images = images,
+                                initialIndex = index,
+                                sourceRect = sourceRect
+                            )
                         }
                     )
                 }
             }
         }
 
-        // 查看器
+        // 查看器 - 支持左右滑动切换图片
         viewerState?.let { state ->
-            ViewerOverlay(
+            SwipeableViewerOverlay(
                 viewerState = state,
                 onDismiss = { viewerState = null },
                 showHdr = showHdrBadges,

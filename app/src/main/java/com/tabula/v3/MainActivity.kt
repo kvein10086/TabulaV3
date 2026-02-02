@@ -395,6 +395,49 @@ fun TabulaApp(
             }
         }
     }
+    
+    /**
+     * 批量删除原图（清理功能）
+     * 
+     * @param uris 待删除的 URI 列表
+     * @param onResult 回调，返回成功删除的 URI 列表
+     */
+    fun performDeleteUris(uris: List<android.net.Uri>, onResult: (Set<String>) -> Unit) {
+        if (uris.isEmpty()) {
+            onResult(emptySet())
+            return
+        }
+        
+        scope.launch {
+            val result = fileOperationManager.deleteImages(uris)
+            when (result) {
+                is FileOperationManager.DeleteResult.Success -> {
+                    val deletedUris = result.deleted.map { it.toString() }.toSet()
+                    Log.d("TabulaApp", "Cleanup deleted: ${deletedUris.size}/${uris.size}")
+                    onResult(deletedUris)
+                }
+                is FileOperationManager.DeleteResult.NeedsPermission -> {
+                    onRequestDeletePermission(result.intentSender) { granted ->
+                        if (granted) {
+                            scope.launch {
+                                val actuallyDeleted = fileOperationManager.verifyDeletion(result.pendingUris)
+                                val deletedUris = actuallyDeleted.map { it.toString() }.toSet()
+                                Log.d("TabulaApp", "Cleanup permission granted, deleted: ${deletedUris.size}/${uris.size}")
+                                onResult(deletedUris)
+                            }
+                        } else {
+                            Log.w("TabulaApp", "Cleanup permission denied for: ${uris.size} images")
+                            onResult(emptySet())
+                        }
+                    }
+                }
+                is FileOperationManager.DeleteResult.Error -> {
+                    Log.e("TabulaApp", "Cleanup error: ${result.message}")
+                    onResult(emptySet())
+                }
+            }
+        }
+    }
 
     // ========== 屏幕内容定义 ==========
     LaunchedEffect(hapticEnabled, hapticStrength) {
@@ -443,7 +486,15 @@ fun TabulaApp(
             systemBuckets = systemBuckets,
             onAlbumSelect = { imageId, imageUri, albumId ->
                  scope.launch {
-                     albumManager.addImageToAlbum(imageId, imageUri, albumId)
+                     // 先提交之前的 pending action（如果有）
+                     // 这样快速连续归档时，前一个会被自动提交
+                     albumManager.getLastPendingArchive()?.let { 
+                         albumManager.commitPendingArchive(it.id)
+                     }
+                     
+                     // 加入新的 pending action（不立即复制）
+                     val album = albums.find { it.id == albumId }
+                     albumManager.queueImageToAlbum(imageId, imageUri, albumId, album?.name ?: albumId)
                  }
             },
             onCreateAlbum = { name, color, emoji ->
@@ -453,15 +504,29 @@ fun TabulaApp(
             },
             onCreateAlbumAndClassify = { name, color, emoji, image ->
                 scope.launch {
+                    // 先提交之前的 pending action（如果有）
+                    albumManager.getLastPendingArchive()?.let { 
+                        albumManager.commitPendingArchive(it.id)
+                    }
+                    
                     // 1. 创建图集
                     val newAlbum = albumManager.createAlbum(name, color, emoji)
-                    // 2. 将图片归档到新图集
-                    albumManager.addImageToAlbum(image.id, image.uri.toString(), newAlbum.id)
+                    // 2. 将图片加入待归档队列
+                    albumManager.queueImageToAlbum(image.id, image.uri.toString(), newAlbum.id, newAlbum.name)
                 }
             },
             onUndoAlbumAction = {
                 scope.launch {
-                    albumManager.undoLastAction()
+                    // 取消待执行的归档操作（图片还没被复制，所以无需删除）
+                    albumManager.cancelLastPendingArchive()
+                }
+            },
+            onCommitArchive = {
+                scope.launch {
+                    // Snackbar 消失时提交归档，执行真正的复制
+                    albumManager.getLastPendingArchive()?.let { 
+                        albumManager.commitPendingArchive(it.id)
+                    }
                 }
             },
             onReorderAlbums = { newOrder ->
@@ -477,50 +542,27 @@ fun TabulaApp(
             getRecommendedBatch = { images, size ->
                 recommendationEngine.getRecommendedBatch(images, size)
             },
-            // 同步按钮回调
+            // 刷新按钮回调（系统相册集成后，不需要同步，只需刷新）
             onSyncClick = {
-                if (!isSyncing) {
-                    isSyncing = true
-                    Toast.makeText(context, "正在同步图集到系统相册...", Toast.LENGTH_SHORT).show()
-                    scope.launch {
-                        try {
-                            val result = albumManager.syncAllEnabledAlbumsToSystem()
-                            withContext(Dispatchers.Main) {
-                                val message = when {
-                                    result.totalAlbums == 0 -> "没有可同步的图集\n请先创建图集并添加图片"
-                                    result.newlySyncedImages == 0 && result.skippedImages > 0 -> 
-                                        "所有 ${result.totalAlbums} 个图集已是最新\n共 ${result.skippedImages} 张图片无需更新"
-                                    result.newlySyncedImages > 0 && result.skippedImages > 0 ->
-                                        "同步完成！\n新增 ${result.newlySyncedImages} 张，${result.skippedImages} 张已存在"
-                                    result.newlySyncedImages > 0 -> 
-                                        "同步完成！\n${result.totalAlbums} 个图集，共 ${result.newlySyncedImages} 张新图片"
-                                    else -> 
-                                        "同步完成\n成功 ${result.successCount}/${result.totalAlbums} 个图集"
-                                }
-                                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-                                
-                                // 刷新系统相册列表和图片列表
-                                val repository = LocalImageRepository(context)
-                                val refreshedData = withContext(Dispatchers.IO) {
-                                    Pair(
-                                        repository.getAllBucketsWithInfo(),
-                                        repository.getAllImages()
-                                    )
-                                }
-                                systemBuckets = refreshedData.first
-                                allImages = refreshedData.second
-                            }
-                        } catch (e: Exception) {
-                            Log.e("TabulaApp", "Sync failed", e)
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "同步失败: ${e.message}", Toast.LENGTH_LONG).show()
-                            }
-                        } finally {
-                            isSyncing = false
+                scope.launch {
+                    Toast.makeText(context, "正在刷新图库...", Toast.LENGTH_SHORT).show()
+                    try {
+                        // 刷新图集列表和图片列表
+                        val repository = LocalImageRepository(context)
+                        val refreshedData = withContext(Dispatchers.IO) {
+                            albumManager.refreshAlbumsFromSystem()
+                            Pair(
+                                repository.getAllBucketsWithInfo(),
+                                repository.getAllImages()
+                            )
                         }
+                        systemBuckets = refreshedData.first
+                        allImages = refreshedData.second
+                        Toast.makeText(context, "刷新完成", Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) {
+                        Log.e("TabulaApp", "Refresh failed", e)
+                        Toast.makeText(context, "刷新失败: ${e.message}", Toast.LENGTH_SHORT).show()
                     }
-                } else {
-                    Toast.makeText(context, "同步进行中，请稍候...", Toast.LENGTH_SHORT).show()
                 }
             },
             showHdrBadges = showHdrBadges,
@@ -535,66 +577,25 @@ fun TabulaApp(
             tagSwitchSpeed = tagSwitchSpeed,
             isAlbumMode = isAlbumMode,
             onModeChange = { isAlbumMode = it },
+            // 清理所有图集的原图
             onCleanupAllAlbums = {
                 scope.launch {
-                    // 获取所有图集中可清理的旧图 URI（分桶：原图 + 残留副本）
                     val cleanableResult = albumManager.getCleanableUrisForAllAlbums()
-                    
                     if (cleanableResult.isEmpty) {
-                        val totalCount = cleanableResult.sourceTotalCount + cleanableResult.orphanTotalCount
-                        val message = if (totalCount > 0) "所有旧图已清理完毕" else "图集中没有可清理的旧图"
-                        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-                        Log.d("TabulaApp", "No cleanable images for all albums (source=${cleanableResult.sourceTotalCount}, orphan=${cleanableResult.orphanTotalCount})")
+                        Toast.makeText(context, "没有需要清理的原图", Toast.LENGTH_SHORT).show()
                         return@launch
                     }
                     
-                    val allCleanableUris = cleanableResult.allUris
-                    Log.d("TabulaApp", "Found cleanable images for all albums: source=${cleanableResult.sourceUris.size}, orphan=${cleanableResult.orphanUris.size}")
+                    Toast.makeText(context, "正在清理 ${cleanableResult.sourceUris.size} 张原图...", Toast.LENGTH_SHORT).show()
                     
-                    // 刷新图片列表的辅助函数
-                    suspend fun refreshImages() {
-                        val repository = LocalImageRepository(context)
-                        allImages = repository.getAllImages()
-                        albumManager.validateAndFixCoverImages(allImages.map { it.id }.toSet())
-                        Log.d("TabulaApp", "Refreshed images after cleanup")
-                    }
-                    
-                    // 处理清理成功后的状态更新
-                    suspend fun handleCleanupSuccess(deletedUris: Set<android.net.Uri>) {
+                    performDeleteUris(cleanableResult.sourceUris) { deletedUris ->
                         if (deletedUris.isNotEmpty()) {
-                            val deletedUriStrings = deletedUris.map { it.toString() }.toSet()
-                            albumManager.clearDeletedUris(deletedUriStrings)
-                            refreshImages()
-                            Log.d("TabulaApp", "Cleanup completed: ${deletedUris.size} images deleted")
-                            Toast.makeText(context, "已清理 ${deletedUris.size} 张旧图", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Log.w("TabulaApp", "No images were actually deleted")
-                            Toast.makeText(context, "清理未成功", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                    
-                    // 调用删除操作
-                    val result = fileOperationManager.deleteImages(allCleanableUris)
-                    when (result) {
-                        is FileOperationManager.DeleteResult.Success -> {
-                            handleCleanupSuccess(result.deleted)
-                        }
-                        is FileOperationManager.DeleteResult.NeedsPermission -> {
-                            onRequestDeletePermission(result.intentSender) { granted ->
-                                if (granted) {
-                                    scope.launch {
-                                        val actuallyDeleted = fileOperationManager.verifyDeletion(result.pendingUris)
-                                        handleCleanupSuccess(actuallyDeleted)
-                                    }
-                                } else {
-                                    Log.w("TabulaApp", "Cleanup permission denied")
-                                    Toast.makeText(context, "清理已取消", Toast.LENGTH_SHORT).show()
-                                }
+                            scope.launch {
+                                albumManager.clearDeletedUris(deletedUris)
                             }
-                        }
-                        is FileOperationManager.DeleteResult.Error -> {
-                            Log.e("TabulaApp", "Cleanup failed: ${result.message}")
-                            Toast.makeText(context, "清理失败: ${result.message}", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "已清理 ${deletedUris.size} 张原图", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "清理失败或已取消", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
@@ -924,71 +925,25 @@ fun TabulaApp(
                     albumManager.copyImagesToAlbum(imageIds, targetAlbumId)
                 }
             },
+            // 清理当前图集的原图
             onCleanupAlbum = { albumId ->
                 scope.launch {
-                    // 获取图集中可清理的旧图 URI（分桶：原图 + 残留副本）
                     val cleanableResult = albumManager.getCleanableUrisForAlbum(albumId)
-                    
                     if (cleanableResult.isEmpty) {
-                        // 没有可清理的图片
-                        val totalCount = cleanableResult.sourceTotalCount + cleanableResult.orphanTotalCount
-                        val message = if (totalCount > 0) "所有旧图已清理完毕" else "图集中没有可清理的旧图"
-                        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-                        Log.d("TabulaApp", "No cleanable images for album $albumId (source=${cleanableResult.sourceTotalCount}, orphan=${cleanableResult.orphanTotalCount})")
+                        Toast.makeText(context, "没有需要清理的原图", Toast.LENGTH_SHORT).show()
                         return@launch
                     }
                     
-                    val allCleanableUris = cleanableResult.allUris
-                    Log.d("TabulaApp", "Found cleanable images for album $albumId: source=${cleanableResult.sourceUris.size}, orphan=${cleanableResult.orphanUris.size}")
+                    Toast.makeText(context, "正在清理 ${cleanableResult.sourceUris.size} 张原图...", Toast.LENGTH_SHORT).show()
                     
-                    // 刷新图片列表的辅助函数
-                    suspend fun refreshImages() {
-                        val repository = LocalImageRepository(context)
-                        allImages = repository.getAllImages()
-                        albumManager.validateAndFixCoverImages(allImages.map { it.id }.toSet())
-                        Log.d("TabulaApp", "Refreshed images after cleanup")
-                    }
-                    
-                    // 处理清理成功后的状态更新
-                    suspend fun handleCleanupSuccess(deletedUris: Set<android.net.Uri>) {
+                    performDeleteUris(cleanableResult.sourceUris) { deletedUris ->
                         if (deletedUris.isNotEmpty()) {
-                            // 将成功删除的 URI 转换为字符串集合，清除对应的 originalUri 和 cleanupUris
-                            val deletedUriStrings = deletedUris.map { it.toString() }.toSet()
-                            albumManager.clearDeletedUris(deletedUriStrings)
-                            refreshImages()
-                            Log.d("TabulaApp", "Cleanup completed: ${deletedUris.size} images deleted")
-                            Toast.makeText(context, "已清理 ${deletedUris.size} 张旧图", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Log.w("TabulaApp", "No images were actually deleted")
-                            Toast.makeText(context, "清理未成功", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                    
-                    // 调用删除操作
-                    val result = fileOperationManager.deleteImages(allCleanableUris)
-                    when (result) {
-                        is FileOperationManager.DeleteResult.Success -> {
-                            // Android 10 及以下：直接返回成功删除的 URI
-                            handleCleanupSuccess(result.deleted)
-                        }
-                        is FileOperationManager.DeleteResult.NeedsPermission -> {
-                            // Android 11+：需要用户授权
-                            onRequestDeletePermission(result.intentSender) { granted ->
-                                if (granted) {
-                                    scope.launch {
-                                        // 授权后验证实际删除结果
-                                        val actuallyDeleted = fileOperationManager.verifyDeletion(result.pendingUris)
-                                        handleCleanupSuccess(actuallyDeleted)
-                                    }
-                                } else {
-                                    Log.w("TabulaApp", "Cleanup permission denied")
-                                    Toast.makeText(context, "清理已取消", Toast.LENGTH_SHORT).show()
-                                }
+                            scope.launch {
+                                albumManager.clearDeletedUris(deletedUris)
                             }
-                        }
-                        is FileOperationManager.DeleteResult.Error -> {
-                            Log.e("TabulaApp", "Cleanup failed: ${result.message}")
-                            Toast.makeText(context, "清理失败: ${result.message}", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "已清理 ${deletedUris.size} 张原图", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "清理失败或已取消", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }

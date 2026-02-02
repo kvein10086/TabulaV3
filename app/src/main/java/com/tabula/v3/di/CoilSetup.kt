@@ -44,10 +44,10 @@ object CoilSetup {
      */
     private fun createImageLoader(context: Context): ImageLoader {
         val availableMemory = getAvailableMemory(context)
-        // 使用可用内存的 25% 作为图片缓存
-        val memoryCacheSize = (availableMemory * 0.25).toLong().coerceIn(
-            minimumValue = 32L * 1024 * 1024,  // 最小 32MB
-            maximumValue = 256L * 1024 * 1024  // 最大 256MB
+        // 使用可用内存的 30% 作为图片缓存（更激进）
+        val memoryCacheSize = (availableMemory * 0.30).toLong().coerceIn(
+            minimumValue = 48L * 1024 * 1024,  // 最小 48MB
+            maximumValue = 384L * 1024 * 1024  // 最大 384MB
         )
 
         return ImageLoader.Builder(context)
@@ -63,7 +63,7 @@ object CoilSetup {
             .diskCache {
                 DiskCache.Builder()
                     .directory(File(context.cacheDir, "image_cache"))
-                    .maxSizeBytes(150L * 1024 * 1024) // 150MB
+                    .maxSizeBytes(200L * 1024 * 1024) // 200MB（更大缓存）
                     .build()
             }
             // ========== 缓存策略 ==========
@@ -73,13 +73,13 @@ object CoilSetup {
             // 使用 ARGB_8888 以确保高质量和正确的透明度支持
             // 虽然耗损更多内存 (32位)，但对于动图透明背景是必须的
             .bitmapConfig(Bitmap.Config.ARGB_8888)
-            // 禁用 RGB_565，强制使用 ARGB_8888
-            .allowRgb565(false)
+            // 允许 RGB_565 用于不需要透明度的场景（请求时可单独指定）
+            .allowRgb565(true)
             // ========== 性能优化 ==========
-            // 允许硬件位图（Android 8.0+）
+            // 允许硬件位图（Android 8.0+）- 更快的渲染
             .allowHardware(true)
-            // 交叉淡入动画保持流畅
-            .crossfade(150)
+            // 减少交叉淡入时间 - 更快显示
+            .crossfade(80)
             // 尊重缓存头
             .respectCacheHeaders(false)
             // ========== 禁用网络 + 动画支持 ==========

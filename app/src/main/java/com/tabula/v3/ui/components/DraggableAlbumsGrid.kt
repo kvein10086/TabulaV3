@@ -108,7 +108,9 @@ fun DraggableAlbumsGrid(
         val newRow = (currentRow + rowOffset).coerceIn(0, (orderedAlbums.size - 1) / columnsPerRow)
         
         val newIndex = newRow * columnsPerRow + newCol
-        return newIndex.coerceIn(0, orderedAlbums.lastIndex)
+        // 防止空列表时 lastIndex 为 -1 导致 coerceIn 崩溃
+        return if (orderedAlbums.isEmpty()) currentIndex 
+               else newIndex.coerceIn(0, orderedAlbums.lastIndex)
     }
     
     LazyVerticalGrid(

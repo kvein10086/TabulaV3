@@ -13,9 +13,13 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -603,7 +607,7 @@ private fun RecycleBinItem(
 private data class ViewerState(val initialIndex: Int)
 
 /**
- * 全屏图片查看器 (保持原有逻辑)
+ * 全屏图片查看器 - 支持左右滑动切换图片
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -620,94 +624,23 @@ private fun FullScreenViewer(
 ) {
     val context = LocalContext.current
     val imageLoader = CoilSetup.getImageLoader(context)
-    val isDarkTheme = LocalIsDarkTheme.current
 
-    var zoomScale by remember { mutableFloatStateOf(1f) }
-    var zoomOffset by remember { mutableStateOf(Offset.Zero) }
-    var zoomSize by remember { mutableStateOf(Size.Zero) }
-    val minScale = 1f
-    val maxScale = 8f
-    val doubleTapScale = 3f
-
-    fun clampOffset(
-        offset: Offset,
-        scale: Float,
-        size: Size
-    ): Offset {
-        if (size.width <= 0f || size.height <= 0f) return Offset.Zero
-        val maxOffsetX = ((size.width * scale) - size.width).coerceAtLeast(0f) / 2f
-        val maxOffsetY = ((size.height * scale) - size.height).coerceAtLeast(0f) / 2f
-        return Offset(
-            x = offset.x.coerceIn(-maxOffsetX, maxOffsetX),
-            y = offset.y.coerceIn(-maxOffsetY, maxOffsetY)
-        )
-    }
-
-    fun applyScaleAndOffset(newScale: Float, newOffset: Offset, size: Size) {
-        val clampedScale = newScale.coerceIn(minScale, maxScale)
-        if (size.width <= 0f || size.height <= 0f) {
-            zoomScale = clampedScale
-            zoomOffset = Offset.Zero
-            return
-        }
-        if (clampedScale <= minScale) {
-            zoomScale = minScale
-            zoomOffset = Offset.Zero
-            return
-        }
-        zoomScale = clampedScale
-        zoomOffset = clampOffset(newOffset, clampedScale, size)
-    }
+    // Pager 状态 - 用于滑动切换图片
+    val pagerState = rememberPagerState(
+        initialPage = initialIndex.coerceIn(0, images.lastIndex.coerceAtLeast(0)),
+        pageCount = { images.size }
+    )
     
-    // 获取当前显示的图片
-    val displayImage = images.getOrNull(initialIndex.coerceIn(0, images.lastIndex.coerceAtLeast(0)))
-    val currentFeatures = displayImage?.let { image ->
-        rememberImageFeatures(
-            image = image,
-            enableHdr = showHdr,
-            enableMotion = showMotionPhoto
-        )
-    }
-    val isHdr = showHdr && (currentFeatures?.isHdr == true)
-    val currentMotionInfo = if (showMotionPhoto) currentFeatures?.motionPhotoInfo else null
-    var isHdrComparePressed by remember { mutableStateOf(false) }
-    var isLivePressed by remember { mutableStateOf(false) }
-    var isPressing by remember { mutableStateOf(false) }
-    // 记录是否刚刚完成了长按操作（用于 HDR/Live 预览），防止释放时误触发退出
-    var wasLongPressing by remember { mutableStateOf(false) }
-    val pressDelayMs = 80L
-
-    LaunchedEffect(isPressing, isHdr, currentMotionInfo) {
-        if (!isPressing) {
-            isHdrComparePressed = false
-            isLivePressed = false
-            return@LaunchedEffect
-        }
-        delay(pressDelayMs)
-        if (isPressing) {
-            if (isHdr) {
-                isHdrComparePressed = true
-            }
-            if (currentMotionInfo != null) {
-                isLivePressed = true
-            }
-        }
-    }
+    // 当前页面的缩放状态 - 用于控制 Pager 滑动
+    var currentPageZoom by remember { mutableFloatStateOf(1f) }
+    
+    // 当前显示的图片
+    val currentIndex = pagerState.currentPage
+    val displayImage = images.getOrNull(currentIndex)
 
     val activity = context.findActivity()
     val window = activity?.window
     val originalColorMode = remember(window) { window?.colorMode ?: ActivityInfo.COLOR_MODE_DEFAULT }
-    val desiredColorMode = when {
-        isHdr && !isHdrComparePressed -> ActivityInfo.COLOR_MODE_HDR
-        isHdr && isHdrComparePressed -> ActivityInfo.COLOR_MODE_DEFAULT
-        else -> originalColorMode
-    }
-
-    LaunchedEffect(desiredColorMode, window) {
-        if (window != null) {
-            window.colorMode = desiredColorMode
-        }
-    }
 
     androidx.compose.runtime.DisposableEffect(window) {
         onDispose {
@@ -717,140 +650,38 @@ private fun FullScreenViewer(
         }
     }
 
-
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // 单张图片显示（不需要翻页）
-        if (displayImage != null) {
-            BoxWithConstraints(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                val aspectRatio = if (displayImage.height > 0) {
-                    displayImage.width.toFloat() / displayImage.height
-                } else {
-                    1f
-                }
-                val containerRatio = maxWidth.value / maxHeight.value
-                val (targetWidth, targetHeight) = if (aspectRatio > containerRatio) {
-                    maxWidth to (maxWidth / aspectRatio)
-                } else {
-                    (maxHeight * aspectRatio) to maxHeight
-                }
-
-                Box(
-                    modifier = Modifier
-                        .size(targetWidth, targetHeight)
-                        .onSizeChanged { size ->
-                            zoomSize = Size(size.width.toFloat(), size.height.toFloat())
+        // 使用 HorizontalPager 实现左右滑动
+        // 当图片放大时禁用滑动，以便拖动图片
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize(),
+            userScrollEnabled = currentPageZoom <= 1.05f,
+            key = { images.getOrNull(it)?.id ?: it }
+        ) { pageIndex ->
+            val pageImage = images.getOrNull(pageIndex)
+            if (pageImage != null) {
+                RecycleBinImagePage(
+                    image = pageImage,
+                    imageLoader = imageLoader,
+                    showHdr = showHdr,
+                    showMotionPhoto = showMotionPhoto,
+                    playMotionSound = playMotionSound,
+                    motionSoundVolume = motionSoundVolume,
+                    onDismiss = onDismiss,
+                    window = window,
+                    originalColorMode = originalColorMode,
+                    onZoomChanged = { zoom ->
+                        // 只更新当前页面的缩放状态
+                        if (pageIndex == pagerState.currentPage) {
+                            currentPageZoom = zoom
                         }
-                        .graphicsLayer {
-                            scaleX = zoomScale
-                            scaleY = zoomScale
-                            translationX = zoomOffset.x
-                            translationY = zoomOffset.y
-                            transformOrigin = TransformOrigin(0.5f, 0.5f)
-                        }
-                        // 双指缩放
-                        .pointerInput(Unit) {
-                            detectTransformGestures { _, _, zoom, _ ->
-                                val newScale = (zoomScale * zoom).coerceIn(minScale, maxScale)
-                                zoomScale = newScale
-                                if (newScale <= minScale) {
-                                    zoomOffset = Offset.Zero
-                                } else {
-                                    zoomOffset = clampOffset(zoomOffset, newScale, zoomSize)
-                                }
-                            }
-                        }
-                        // 单击/双击/长按 + 单指拖动（合并处理避免冲突）
-                        .pointerInput(Unit) {
-                            detectTapGestures(
-                                onTap = {
-                                    // 单击退出（未放大时）
-                                    // 如果刚刚完成了长按操作（HDR/Live 预览），不触发退出
-                                    if (wasLongPressing) {
-                                        wasLongPressing = false
-                                        return@detectTapGestures
-                                    }
-                                    if (zoomScale <= 1.2f) {
-                                        onDismiss()
-                                    }
-                                },
-                                onPress = {
-                                    isPressing = true
-                                    tryAwaitRelease()
-                                    // 检查是否触发过 HDR/Live 播放，如果是则标记为长按操作
-                                    if (isHdrComparePressed || isLivePressed) {
-                                        wasLongPressing = true
-                                    }
-                                    isPressing = false
-                                },
-                                onDoubleTap = { tapOffset ->
-                                    val targetScale = if (zoomScale > 1.2f) minScale else doubleTapScale
-                                    if (zoomSize.width <= 0f || zoomSize.height <= 0f) {
-                                        zoomScale = targetScale
-                                        zoomOffset = Offset.Zero
-                                        return@detectTapGestures
-                                    }
-                                    if (targetScale <= minScale) {
-                                        zoomScale = minScale
-                                        zoomOffset = Offset.Zero
-                                    } else {
-                                        val center = Offset(zoomSize.width / 2f, zoomSize.height / 2f)
-                                        val scaleChange = targetScale / zoomScale
-                                        val newOffset = (zoomOffset + (tapOffset - center) * (1 - scaleChange))
-                                        zoomScale = targetScale
-                                        zoomOffset = clampOffset(newOffset, targetScale, zoomSize)
-                                    }
-                                }
-                            )
-                        }
-                        // 单指拖动（只在放大时生效，放在最后避免与点击冲突）
-                        .then(
-                            if (zoomScale > minScale) {
-                                Modifier.pointerInput(zoomScale) {
-                                    detectDragGestures { change, dragAmount ->
-                                        change.consume()
-                                        if (zoomSize.width > 0f && zoomSize.height > 0f) {
-                                            val panMultiplier = zoomScale.coerceIn(1f, maxScale)
-                                            val adjustedPan = Offset(dragAmount.x * panMultiplier, dragAmount.y * panMultiplier)
-                                            val newOffset = zoomOffset + adjustedPan
-                                            zoomOffset = clampOffset(newOffset, zoomScale, zoomSize)
-                                        }
-                                    }
-                                }
-                            } else {
-                                Modifier
-                            }
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(context)
-                            .data(displayImage.uri)
-                            .crossfade(200)
-                            .build(),
-                        contentDescription = displayImage.displayName,
-                        imageLoader = imageLoader,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize()
-                    )
-
-                    if (currentMotionInfo != null) {
-                        MotionPhotoPlayer(
-                            imageUri = displayImage.uri,
-                            motionInfo = currentMotionInfo,
-                            modifier = Modifier.fillMaxSize(),
-                            playWhen = isLivePressed,
-                            playAudio = playMotionSound,
-                            volumePercent = motionSoundVolume
-                        )
                     }
-                }
+                )
             }
         }
 
@@ -878,7 +709,7 @@ private fun FullScreenViewer(
             }
             
             Text(
-                text = "${initialIndex + 1} / ${images.size}",
+                text = "${currentIndex + 1} / ${images.size}",
                 color = Color.White,
                 style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.align(Alignment.Center)
@@ -945,6 +776,234 @@ private fun FullScreenViewer(
                         fontSize = 12.sp
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 回收站图片页面 - HorizontalPager 中的单个页面
+ * 包含缩放、拖动、HDR/Live Photo 功能
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun RecycleBinImagePage(
+    image: ImageFile,
+    imageLoader: coil.ImageLoader,
+    showHdr: Boolean,
+    showMotionPhoto: Boolean,
+    playMotionSound: Boolean,
+    motionSoundVolume: Int,
+    onDismiss: () -> Unit,
+    window: android.view.Window?,
+    originalColorMode: Int,
+    onZoomChanged: (Float) -> Unit = {}
+) {
+    val context = LocalContext.current
+    
+    // 每个页面独立的缩放状态
+    var zoomScale by remember { mutableFloatStateOf(1f) }
+    var zoomOffset by remember { mutableStateOf(Offset.Zero) }
+    var zoomSize by remember { mutableStateOf(Size.Zero) }
+    val minScale = 1f
+    val maxScale = 8f
+    val doubleTapScale = 3f
+    
+    // 当缩放变化时通知父组件
+    LaunchedEffect(zoomScale) {
+        onZoomChanged(zoomScale)
+    }
+
+    fun clampOffset(
+        offset: Offset,
+        scale: Float,
+        size: Size
+    ): Offset {
+        if (size.width <= 0f || size.height <= 0f) return Offset.Zero
+        val maxOffsetX = ((size.width * scale) - size.width).coerceAtLeast(0f) / 2f
+        val maxOffsetY = ((size.height * scale) - size.height).coerceAtLeast(0f) / 2f
+        return Offset(
+            x = offset.x.coerceIn(-maxOffsetX, maxOffsetX),
+            y = offset.y.coerceIn(-maxOffsetY, maxOffsetY)
+        )
+    }
+
+    // HDR / Live Photo 功能
+    val currentFeatures = rememberImageFeatures(
+        image = image,
+        enableHdr = showHdr,
+        enableMotion = showMotionPhoto
+    )
+    val isHdr = showHdr && (currentFeatures?.isHdr == true)
+    val currentMotionInfo = if (showMotionPhoto) currentFeatures?.motionPhotoInfo else null
+    var isHdrComparePressed by remember { mutableStateOf(false) }
+    var isLivePressed by remember { mutableStateOf(false) }
+    var isPressing by remember { mutableStateOf(false) }
+    var wasLongPressing by remember { mutableStateOf(false) }
+    val pressDelayMs = 80L
+
+    LaunchedEffect(isPressing, isHdr, currentMotionInfo) {
+        if (!isPressing) {
+            isHdrComparePressed = false
+            isLivePressed = false
+            return@LaunchedEffect
+        }
+        delay(pressDelayMs)
+        if (isPressing) {
+            if (isHdr) {
+                isHdrComparePressed = true
+            }
+            if (currentMotionInfo != null) {
+                isLivePressed = true
+            }
+        }
+    }
+
+    val desiredColorMode = when {
+        isHdr && !isHdrComparePressed -> ActivityInfo.COLOR_MODE_HDR
+        isHdr && isHdrComparePressed -> ActivityInfo.COLOR_MODE_DEFAULT
+        else -> originalColorMode
+    }
+
+    LaunchedEffect(desiredColorMode, window) {
+        if (window != null) {
+            window.colorMode = desiredColorMode
+        }
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        val aspectRatio = if (image.height > 0) {
+            image.width.toFloat() / image.height
+        } else {
+            1f
+        }
+        val containerRatio = maxWidth.value / maxHeight.value
+        val (targetWidth, targetHeight) = if (aspectRatio > containerRatio) {
+            maxWidth to (maxWidth / aspectRatio)
+        } else {
+            (maxHeight * aspectRatio) to maxHeight
+        }
+
+        Box(
+            modifier = Modifier
+                .size(targetWidth, targetHeight)
+                .onSizeChanged { size ->
+                    zoomSize = Size(size.width.toFloat(), size.height.toFloat())
+                }
+                .graphicsLayer {
+                    scaleX = zoomScale
+                    scaleY = zoomScale
+                    translationX = zoomOffset.x
+                    translationY = zoomOffset.y
+                    transformOrigin = TransformOrigin(0.5f, 0.5f)
+                }
+                // 双指缩放 - 使用自定义检测，只处理双指手势，不阻止 Pager 滑动
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        do {
+                            val event = awaitPointerEvent()
+                            // 只在双指时处理缩放
+                            if (event.changes.size >= 2) {
+                                val zoomChange = event.calculateZoom()
+                                if (zoomChange != 1f) {
+                                    val newScale = (zoomScale * zoomChange).coerceIn(minScale, maxScale)
+                                    zoomScale = newScale
+                                    if (newScale <= minScale) {
+                                        zoomOffset = Offset.Zero
+                                    } else {
+                                        zoomOffset = clampOffset(zoomOffset, newScale, zoomSize)
+                                    }
+                                    event.changes.forEach { it.consume() }
+                                }
+                            }
+                            // 单指时不消费事件，让 Pager 可以接收滑动
+                        } while (event.changes.any { it.pressed })
+                    }
+                }
+                // 单击/双击/长按
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = {
+                            if (wasLongPressing) {
+                                wasLongPressing = false
+                                return@detectTapGestures
+                            }
+                            if (zoomScale <= 1.2f) {
+                                onDismiss()
+                            }
+                        },
+                        onPress = {
+                            isPressing = true
+                            tryAwaitRelease()
+                            if (isHdrComparePressed || isLivePressed) {
+                                wasLongPressing = true
+                            }
+                            isPressing = false
+                        },
+                        onDoubleTap = { tapOffset ->
+                            val targetScale = if (zoomScale > 1.2f) minScale else doubleTapScale
+                            if (zoomSize.width <= 0f || zoomSize.height <= 0f) {
+                                zoomScale = targetScale
+                                zoomOffset = Offset.Zero
+                                return@detectTapGestures
+                            }
+                            if (targetScale <= minScale) {
+                                zoomScale = minScale
+                                zoomOffset = Offset.Zero
+                            } else {
+                                val center = Offset(zoomSize.width / 2f, zoomSize.height / 2f)
+                                val scaleChange = targetScale / zoomScale
+                                val newOffset = (zoomOffset + (tapOffset - center) * (1 - scaleChange))
+                                zoomScale = targetScale
+                                zoomOffset = clampOffset(newOffset, targetScale, zoomSize)
+                            }
+                        }
+                    )
+                }
+                // 单指拖动（只在放大时生效）
+                .then(
+                    if (zoomScale > minScale) {
+                        Modifier.pointerInput(zoomScale) {
+                            detectDragGestures { change, dragAmount ->
+                                change.consume()
+                                if (zoomSize.width > 0f && zoomSize.height > 0f) {
+                                    val panMultiplier = zoomScale.coerceIn(1f, maxScale)
+                                    val adjustedPan = Offset(dragAmount.x * panMultiplier, dragAmount.y * panMultiplier)
+                                    val newOffset = zoomOffset + adjustedPan
+                                    zoomOffset = clampOffset(newOffset, zoomScale, zoomSize)
+                                }
+                            }
+                        }
+                    } else {
+                        Modifier
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            AsyncImage(
+                model = ImageRequest.Builder(context)
+                    .data(image.uri)
+                    .crossfade(200)
+                    .build(),
+                contentDescription = image.displayName,
+                imageLoader = imageLoader,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize()
+            )
+
+            if (currentMotionInfo != null) {
+                MotionPhotoPlayer(
+                    imageUri = image.uri,
+                    motionInfo = currentMotionInfo,
+                    modifier = Modifier.fillMaxSize(),
+                    playWhen = isLivePressed,
+                    playAudio = playMotionSound,
+                    volumePercent = motionSoundVolume
+                )
             }
         }
     }
