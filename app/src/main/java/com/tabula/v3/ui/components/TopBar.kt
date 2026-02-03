@@ -1,6 +1,7 @@
 package com.tabula.v3.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -14,12 +15,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -33,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tabula.v3.data.model.ImageFile
+import com.tabula.v3.data.preferences.AlbumCleanupDisplayMode
 import com.tabula.v3.data.preferences.TopBarDisplayMode
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.components.LocalLiquidGlassEnabled
@@ -47,7 +51,7 @@ import java.util.Locale
 /**
  * 顶部栏组件
  *
- * 显示：进度指示 (2/15) 或 时间 (2023 Jul) | 回收站图标 | 设置图标
+ * 显示：进度指示 (2/15) 或 时间 (2023 Jul) | 图集选择 | 回收站图标 | 设置图标
  *
  * @param currentIndex 当前索引（0-based）
  * @param totalCount 总数量
@@ -56,6 +60,15 @@ import java.util.Locale
  * @param onTrashClick 回收站按钮点击
  * @param onSettingsClick 设置按钮点击
  * @param onTrashButtonBoundsChanged 回收站按钮位置变化回调（用于Genie动画目标点）
+ * @param isAlbumCleanupMode 是否处于图集清理模式
+ * @param albumCleanupName 图集清理模式下的图集名称
+ * @param albumCleanupTotalGroups 图集清理模式下的总组数
+ * @param albumCleanupRemainingGroups 图集清理模式下的剩余组数
+ * @param albumCleanupTotalImages 图集清理模式下的总照片数
+ * @param albumCleanupRemainingImages 图集清理模式下的剩余照片数
+ * @param albumCleanupDisplayMode 图集清理显示模式（组/张）
+ * @param onAlbumCleanupDisplayModeToggle 点击切换显示模式的回调
+ * @param onAlbumCleanupClick 图集选择按钮点击回调
  * @param modifier 外部修饰符
  */
 @Composable
@@ -67,6 +80,16 @@ fun TopBar(
     onTrashClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onTrashButtonBoundsChanged: ((Rect) -> Unit)? = null,
+    // 图集清理模式参数
+    isAlbumCleanupMode: Boolean = false,
+    albumCleanupName: String? = null,
+    albumCleanupTotalGroups: Int = 0,
+    albumCleanupRemainingGroups: Int = 0,
+    albumCleanupTotalImages: Int = 0,
+    albumCleanupRemainingImages: Int = 0,
+    albumCleanupDisplayMode: AlbumCleanupDisplayMode = AlbumCleanupDisplayMode.GROUPS,
+    onAlbumCleanupDisplayModeToggle: (() -> Unit)? = null,
+    onAlbumCleanupClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -74,6 +97,7 @@ fun TopBar(
     val textColor = if (isDarkTheme) Color.White else TabulaColors.CatBlack
     val buttonBgColor = if (isDarkTheme) TabulaColors.CatBlackLight else Color.White
     val buttonIconColor = if (isDarkTheme) Color.White else TabulaColors.CatBlack
+    val accentColor = Color(0xFF007AFF)
 
     Row(
         modifier = modifier
@@ -82,31 +106,69 @@ fun TopBar(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 左侧：索引或时间
-        when (displayMode) {
-            TopBarDisplayMode.INDEX -> {
+        // 左侧：索引/时间 或 图集清理进度
+        if (isAlbumCleanupMode && albumCleanupName != null) {
+            // 图集清理模式：显示图集名称和进度（点击可切换显示模式）
+            androidx.compose.foundation.layout.Column(
+                modifier = Modifier.clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null,  // 禁用点击反馈效果
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        onAlbumCleanupDisplayModeToggle?.invoke()
+                    }
+                )
+            ) {
                 Text(
-                    text = "${currentIndex + 1}/$totalCount",
-                    style = MaterialTheme.typography.displayMedium.copy(
+                    text = albumCleanupName,
+                    style = MaterialTheme.typography.titleLarge.copy(
                         fontWeight = FontWeight.Bold,
-                        fontSize = 36.sp
+                        fontSize = 24.sp
                     ),
-                    color = textColor
+                    color = textColor,
+                    maxLines = 1
+                )
+                // 根据显示模式显示组数或照片数
+                // 照片模式下，剩余数需要减去当前批次已滑过的数量，实现实时更新
+                val displayRemainingImages = (albumCleanupRemainingImages - currentIndex).coerceAtLeast(0)
+                val statsText = when (albumCleanupDisplayMode) {
+                    AlbumCleanupDisplayMode.GROUPS -> "共 $albumCleanupTotalGroups 组 · 剩余 $albumCleanupRemainingGroups 组"
+                    AlbumCleanupDisplayMode.PHOTOS -> "共 $albumCleanupTotalImages 张 · 剩余 $displayRemainingImages 张"
+                }
+                Text(
+                    text = statsText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = textColor.copy(alpha = 0.6f),
+                    fontSize = 13.sp
                 )
             }
-            TopBarDisplayMode.DATE -> {
-                val dateText = currentImage?.dateModified?.let { timestamp ->
-                    formatDateForTopBar(timestamp)
-                } ?: "${currentIndex + 1}/$totalCount"
+        } else {
+            // 普通模式：显示索引或时间
+            when (displayMode) {
+                TopBarDisplayMode.INDEX -> {
+                    Text(
+                        text = "${currentIndex + 1}/$totalCount",
+                        style = MaterialTheme.typography.displayMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 36.sp
+                        ),
+                        color = textColor
+                    )
+                }
+                TopBarDisplayMode.DATE -> {
+                    val dateText = currentImage?.dateModified?.let { timestamp ->
+                        formatDateForTopBar(timestamp)
+                    } ?: "${currentIndex + 1}/$totalCount"
 
-                Text(
-                    text = dateText,
-                    style = MaterialTheme.typography.displayMedium.copy(
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 32.sp
-                    ),
-                    color = textColor
-                )
+                    Text(
+                        text = dateText,
+                        style = MaterialTheme.typography.displayMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 32.sp
+                        ),
+                        color = textColor
+                    )
+                }
             }
         }
 
@@ -115,6 +177,23 @@ fun TopBar(
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // 图集选择按钮（仅在有回调时显示）
+            if (onAlbumCleanupClick != null) {
+                ActionIconButton(
+                    icon = Icons.Rounded.PhotoLibrary,
+                    contentDescription = "选择图集",
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        onAlbumCleanupClick()
+                    },
+                    backgroundColor = if (isAlbumCleanupMode) accentColor.copy(alpha = 0.15f) else buttonBgColor,
+                    iconColor = if (isAlbumCleanupMode) accentColor else buttonIconColor,
+                    forceNormalStyle = isAlbumCleanupMode  // 高亮时强制使用普通样式
+                )
+                
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+            
             // 回收站图标按钮
             ActionIconButton(
                 icon = Icons.Outlined.Delete,
@@ -181,14 +260,19 @@ fun ActionIconButton(
     onClick: () -> Unit,
     backgroundColor: Color,
     iconColor: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    forceNormalStyle: Boolean = false  // 强制使用普通样式（用于高亮状态）
 ) {
     val isLiquidGlassEnabled = LocalLiquidGlassEnabled.current
     
-    if (isLiquidGlassEnabled) {
+    // 当需要特殊高亮背景时，不使用液态玻璃模式
+    if (isLiquidGlassEnabled && !forceNormalStyle) {
         // 液态玻璃模式：使用玻璃按钮
         PhysicalLiquidGlassBox(
-            modifier = modifier.size(44.dp),
+            modifier = modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .clickable(onClick = onClick),
             config = PhysicalLiquidGlassConfig.Button.copy(
                 cornerRadius = 12.dp,
                 surfaceAlpha = 0.18f,
@@ -196,30 +280,22 @@ fun ActionIconButton(
             ),
             contentAlignment = Alignment.Center
         ) {
-            IconButton(
-                onClick = onClick,
-                modifier = Modifier.size(44.dp)
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = contentDescription,
-                    modifier = Modifier.size(24.dp),
-                    tint = iconColor
-                )
-            }
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                modifier = Modifier.size(24.dp),
+                tint = iconColor
+            )
         }
     } else {
-        // 普通模式
-        IconButton(
-            onClick = onClick,
+        // 普通模式：使用 Box 而不是 IconButton，避免圆形默认样式
+        Box(
             modifier = modifier
                 .size(44.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(backgroundColor),
-            colors = IconButtonDefaults.iconButtonColors(
-                containerColor = backgroundColor,
-                contentColor = iconColor
-            )
+                .background(backgroundColor)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = icon,

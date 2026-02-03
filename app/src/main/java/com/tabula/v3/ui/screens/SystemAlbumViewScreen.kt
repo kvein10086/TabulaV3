@@ -191,6 +191,10 @@ private fun PhotoGridItem(
     val imageLoader = remember { CoilSetup.getImageLoader(context) }
     val coordinatesHolder = remember { SystemLayoutCoordinatesHolder() }
 
+    // 占位符背景色 - 在图片加载前显示，避免空白闪烁
+    val isDarkTheme = com.tabula.v3.ui.theme.LocalIsDarkTheme.current
+    val placeholderColor = if (isDarkTheme) androidx.compose.ui.graphics.Color(0xFF2C2C2E) else androidx.compose.ui.graphics.Color(0xFFE5E5EA)
+
     Box(
         modifier = Modifier
             .aspectRatio(1f)
@@ -217,9 +221,14 @@ private fun PhotoGridItem(
             }
     ) {
         // 使用稳定的缓存键，基于图片 ID
-        // 移除 isScrolling 判断，避免滚动时闪黑屏
-        // Coil 的缓存机制会确保已加载的图片不会重复解码
         val cacheKey = remember(image.id) { "sys_grid_${image.id}" }
+        
+        // 先绘制占位符背景
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(placeholderColor)
+        )
         
         AsyncImage(
             model = ImageRequest.Builder(context)
@@ -227,11 +236,13 @@ private fun PhotoGridItem(
                 .size(Size(240, 240))  // 缩略图只需要小尺寸，大幅减少解码压力
                 .precision(Precision.INEXACT)
                 .bitmapConfig(Bitmap.Config.RGB_565)
-                .allowHardware(false)
+                // 启用硬件位图加速（Android 8.0+）- 更快的渲染
+                .allowHardware(true)
                 .memoryCacheKey(cacheKey)
                 .diskCacheKey(cacheKey)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
+                // 禁用 crossfade 动画 - 直接显示，减少视觉延迟
                 .crossfade(false)
                 .build(),
             contentDescription = image.displayName,
@@ -278,20 +289,27 @@ private fun PhotoGridItem(
 
 private class SystemLayoutCoordinatesHolder(var value: LayoutCoordinates? = null)
 
-// 辅助函数：根据文件名判断徽章
+/**
+ * 记住照片网格项的标识
+ * 使用 EXIF/XMP 数据进行真正的 HDR/Motion 检测
+ */
 @Composable
 private fun rememberImageBadges(
     image: ImageFile,
     showHdr: Boolean,
     showMotion: Boolean
 ): List<String> {
-    val badges = mutableListOf<String>()
+    val features = com.tabula.v3.ui.util.rememberImageFeatures(
+        image = image,
+        enableHdr = showHdr,
+        enableMotion = showMotion
+    )
     
-    val name = image.displayName.lowercase()
-    if (showHdr && (name.contains("hdr") || name.contains("_hdr"))) {
+    val badges = mutableListOf<String>()
+    if (showHdr && features?.isHdr == true) {
         badges.add("HDR")
     }
-    if (showMotion && (name.contains("mvimg") || name.contains("motion") || name.contains("live"))) {
+    if (showMotion && features?.isMotionPhoto == true) {
         badges.add("Live")
     }
     

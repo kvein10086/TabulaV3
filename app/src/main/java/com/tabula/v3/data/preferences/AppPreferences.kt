@@ -311,6 +311,12 @@ class AppPreferences(context: Context) {
         SIMILAR_GROUPS_PREFS_NAME,
         Context.MODE_PRIVATE
     )
+    
+    // 图集清理状态记录
+    private val albumCleanupPrefs: SharedPreferences = context.getSharedPreferences(
+        ALBUM_CLEANUP_PREFS_NAME,
+        Context.MODE_PRIVATE
+    )
 
     /**
      * 可选的冷却天数（随机分配）- 用于随机漫步模式
@@ -496,6 +502,329 @@ class AppPreferences(context: Context) {
         keysToRemove.forEach { editor.remove(it) }
         editor.apply()
     }
+    
+    // ==================== 图集清理模式 ====================
+    
+    /**
+     * 图集清理显示模式（组 / 张）
+     */
+    var albumCleanupDisplayMode: AlbumCleanupDisplayMode
+        get() {
+            val value = prefs.getString(KEY_ALBUM_CLEANUP_DISPLAY_MODE, AlbumCleanupDisplayMode.GROUPS.name)
+            return try {
+                AlbumCleanupDisplayMode.valueOf(value ?: AlbumCleanupDisplayMode.GROUPS.name)
+            } catch (e: Exception) {
+                AlbumCleanupDisplayMode.GROUPS
+            }
+        }
+        set(value) {
+            prefs.edit().putString(KEY_ALBUM_CLEANUP_DISPLAY_MODE, value.name).apply()
+        }
+    
+    /**
+     * 当前正在清理的图集ID
+     * null 表示全局整理模式
+     */
+    var currentCleanupAlbumId: String?
+        get() = prefs.getString(KEY_CURRENT_CLEANUP_ALBUM_ID, null)
+        set(value) {
+            if (value != null) {
+                prefs.edit().putString(KEY_CURRENT_CLEANUP_ALBUM_ID, value).apply()
+            } else {
+                prefs.edit().remove(KEY_CURRENT_CLEANUP_ALBUM_ID).apply()
+            }
+        }
+    
+    /**
+     * 保存图集分析结果
+     * 
+     * @param albumId 图集ID
+     * @param totalGroups 总组数
+     * @param groupIds 所有组的ID列表（JSON数组格式）
+     */
+    fun saveAlbumAnalysisResult(albumId: String, totalGroups: Int, groupIds: List<String>) {
+        albumCleanupPrefs.edit()
+            .putInt("total_$albumId", totalGroups)
+            .putStringSet("groups_$albumId", groupIds.toSet())
+            .putLong("analyzed_$albumId", System.currentTimeMillis())
+            .apply()
+    }
+    
+    /**
+     * 保存图集的总照片数（涉及相似组的照片）
+     * 
+     * @param albumId 图集ID
+     * @param totalImages 总照片数
+     */
+    fun saveAlbumTotalImages(albumId: String, totalImages: Int) {
+        albumCleanupPrefs.edit()
+            .putInt("total_images_$albumId", totalImages)
+            .apply()
+    }
+    
+    /**
+     * 获取图集的总照片数
+     * 
+     * @param albumId 图集ID
+     * @return 总照片数，未分析返回 0
+     */
+    fun getAlbumTotalImages(albumId: String): Int {
+        return albumCleanupPrefs.getInt("total_images_$albumId", 0)
+    }
+    
+    /**
+     * 保存组的照片数量
+     * 
+     * @param albumId 图集ID
+     * @param groupId 组ID
+     * @param imageCount 照片数量
+     */
+    fun saveGroupImageCount(albumId: String, groupId: String, imageCount: Int) {
+        albumCleanupPrefs.edit()
+            .putInt("group_size_${albumId}_$groupId", imageCount)
+            .apply()
+    }
+    
+    /**
+     * 批量保存组的照片数量
+     * 
+     * @param albumId 图集ID
+     * @param groupImageCounts 组ID到照片数量的映射
+     */
+    fun saveGroupImageCounts(albumId: String, groupImageCounts: Map<String, Int>) {
+        val editor = albumCleanupPrefs.edit()
+        groupImageCounts.forEach { (groupId, count) ->
+            editor.putInt("group_size_${albumId}_$groupId", count)
+        }
+        editor.apply()
+    }
+    
+    /**
+     * 获取组的照片数量
+     * 
+     * @param albumId 图集ID
+     * @param groupId 组ID
+     * @return 照片数量
+     */
+    fun getGroupImageCount(albumId: String, groupId: String): Int {
+        return albumCleanupPrefs.getInt("group_size_${albumId}_$groupId", 0)
+    }
+    
+    /**
+     * 获取图集的剩余照片数
+     * 
+     * @param albumId 图集ID
+     * @return 剩余未处理的照片数
+     */
+    fun getAlbumRemainingImages(albumId: String): Int {
+        val groupIds = getAlbumGroupIds(albumId)
+        val permanentlyProcessed = getAlbumPermanentlyProcessedGroups(albumId)
+        
+        // 计算未处理组的照片数之和
+        return groupIds
+            .filter { it !in permanentlyProcessed }
+            .sumOf { groupId -> getGroupImageCount(albumId, groupId) }
+    }
+    
+    /**
+     * 获取图集的总组数
+     * 
+     * @param albumId 图集ID
+     * @return 总组数，未分析返回 -1
+     */
+    fun getAlbumTotalGroups(albumId: String): Int {
+        return albumCleanupPrefs.getInt("total_$albumId", -1)
+    }
+    
+    /**
+     * 获取图集的所有组ID
+     * 
+     * @param albumId 图集ID
+     * @return 组ID集合
+     */
+    fun getAlbumGroupIds(albumId: String): Set<String> {
+        return albumCleanupPrefs.getStringSet("groups_$albumId", emptySet()) ?: emptySet()
+    }
+    
+    /**
+     * 获取图集的已处理组数
+     * 
+     * @param albumId 图集ID
+     * @return 已处理的组数
+     */
+    fun getAlbumProcessedGroups(albumId: String): Int {
+        val groupIds = getAlbumGroupIds(albumId)
+        val permanentlyProcessed = getAlbumPermanentlyProcessedGroups(albumId)
+        // 使用永久标记计算已处理的组数
+        return groupIds.count { it in permanentlyProcessed }
+    }
+    
+    /**
+     * 获取图集中已永久处理的组ID集合
+     * 
+     * @param albumId 图集ID
+     * @return 已永久处理的组ID集合
+     */
+    fun getAlbumPermanentlyProcessedGroups(albumId: String): Set<String> {
+        return albumCleanupPrefs.getStringSet("processed_$albumId", emptySet()) ?: emptySet()
+    }
+    
+    /**
+     * 永久标记图集中的组为已处理
+     * 
+     * @param albumId 图集ID
+     * @param groupId 组ID
+     */
+    fun markAlbumGroupPermanentlyProcessed(albumId: String, groupId: String) {
+        val processed = getAlbumPermanentlyProcessedGroups(albumId).toMutableSet()
+        processed.add(groupId)
+        albumCleanupPrefs.edit()
+            .putStringSet("processed_$albumId", processed)
+            .apply()
+    }
+    
+    /**
+     * 批量永久标记图集中的组为已处理
+     * 
+     * @param albumId 图集ID
+     * @param groupIds 组ID列表
+     */
+    fun markAlbumGroupsPermanentlyProcessed(albumId: String, groupIds: List<String>) {
+        val processed = getAlbumPermanentlyProcessedGroups(albumId).toMutableSet()
+        processed.addAll(groupIds)
+        albumCleanupPrefs.edit()
+            .putStringSet("processed_$albumId", processed)
+            .apply()
+    }
+    
+    /**
+     * 获取图集的剩余组数
+     * 
+     * @param albumId 图集ID
+     * @return 剩余未处理的组数
+     */
+    fun getAlbumRemainingGroups(albumId: String): Int {
+        val total = getAlbumTotalGroups(albumId)
+        if (total <= 0) return 0
+        return (total - getAlbumProcessedGroups(albumId)).coerceAtLeast(0)
+    }
+    
+    /**
+     * 检查图集是否已完成清理
+     * 
+     * @param albumId 图集ID
+     * @return true 如果已完成
+     */
+    fun isAlbumCleanupCompleted(albumId: String): Boolean {
+        val total = getAlbumTotalGroups(albumId)
+        if (total <= 0) return false
+        return getAlbumRemainingGroups(albumId) == 0
+    }
+    
+    /**
+     * 标记图集清理完成
+     * 
+     * @param albumId 图集ID
+     */
+    fun markAlbumCleanupCompleted(albumId: String) {
+        val completedSet = getCompletedCleanupAlbumIds().toMutableSet()
+        completedSet.add(albumId)
+        albumCleanupPrefs.edit()
+            .putStringSet(KEY_COMPLETED_CLEANUP_ALBUMS, completedSet)
+            .apply()
+    }
+    
+    /**
+     * 获取已完成清理的图集ID集合
+     * 
+     * @return 已完成的图集ID集合
+     */
+    fun getCompletedCleanupAlbumIds(): Set<String> {
+        return albumCleanupPrefs.getStringSet(KEY_COMPLETED_CLEANUP_ALBUMS, emptySet()) ?: emptySet()
+    }
+    
+    /**
+     * 重置图集的清理状态（用于重新清理）
+     * 
+     * @param albumId 图集ID
+     */
+    fun resetAlbumCleanupState(albumId: String) {
+        val completedSet = getCompletedCleanupAlbumIds().toMutableSet()
+        completedSet.remove(albumId)
+        
+        albumCleanupPrefs.edit()
+            .remove("total_$albumId")
+            .remove("groups_$albumId")
+            .remove("analyzed_$albumId")
+            .remove("processed_$albumId")  // 清除永久处理记录
+            .putStringSet(KEY_COMPLETED_CLEANUP_ALBUMS, completedSet)
+            .apply()
+    }
+    
+    /**
+     * 清除所有图集清理状态
+     */
+    fun clearAllAlbumCleanupState() {
+        albumCleanupPrefs.edit().clear().apply()
+        currentCleanupAlbumId = null
+    }
+    
+    // ==================== 图集清理断点续传 ====================
+    
+    /**
+     * 保存图集清理断点
+     * 
+     * @param albumId 图集ID
+     * @param groupIds 当前批次的组ID列表
+     * @param currentIndex 当前在批次中的索引位置
+     */
+    fun saveAlbumCleanupCheckpoint(albumId: String, groupIds: List<String>, currentIndex: Int) {
+        albumCleanupPrefs.edit()
+            .putStringSet("checkpoint_groups_$albumId", groupIds.toSet())
+            .putString("checkpoint_groups_order_$albumId", groupIds.joinToString(","))  // 保持顺序
+            .putInt("checkpoint_index_$albumId", currentIndex)
+            .putLong("checkpoint_time_$albumId", System.currentTimeMillis())
+            .apply()
+    }
+    
+    /**
+     * 获取图集清理断点
+     * 
+     * @param albumId 图集ID
+     * @return 断点信息 (组ID列表, 当前索引)，如果没有断点返回 null
+     */
+    fun getAlbumCleanupCheckpoint(albumId: String): Pair<List<String>, Int>? {
+        val groupsOrder = albumCleanupPrefs.getString("checkpoint_groups_order_$albumId", null)
+            ?: return null
+        val currentIndex = albumCleanupPrefs.getInt("checkpoint_index_$albumId", 0)
+        
+        // 检查断点是否过期（超过7天）
+        val checkpointTime = albumCleanupPrefs.getLong("checkpoint_time_$albumId", 0L)
+        val maxAge = 7L * 24 * 60 * 60 * 1000  // 7天
+        if (System.currentTimeMillis() - checkpointTime > maxAge) {
+            clearAlbumCleanupCheckpoint(albumId)
+            return null
+        }
+        
+        val groupIds = groupsOrder.split(",").filter { it.isNotEmpty() }
+        if (groupIds.isEmpty()) return null
+        
+        return Pair(groupIds, currentIndex)
+    }
+    
+    /**
+     * 清除图集清理断点
+     * 
+     * @param albumId 图集ID
+     */
+    fun clearAlbumCleanupCheckpoint(albumId: String) {
+        albumCleanupPrefs.edit()
+            .remove("checkpoint_groups_$albumId")
+            .remove("checkpoint_groups_order_$albumId")
+            .remove("checkpoint_index_$albumId")
+            .remove("checkpoint_time_$albumId")
+            .apply()
+    }
 
     companion object {
         private const val PREFS_NAME = "tabula_prefs"
@@ -534,6 +863,12 @@ class AppPreferences(context: Context) {
 
         private const val PICK_TIMESTAMPS_PREFS_NAME = "tabula_pick_timestamps"
         private const val SIMILAR_GROUPS_PREFS_NAME = "tabula_similar_groups"
+        private const val ALBUM_CLEANUP_PREFS_NAME = "tabula_album_cleanup"
+        
+        // 图集清理相关 KEY
+        private const val KEY_CURRENT_CLEANUP_ALBUM_ID = "current_cleanup_album_id"
+        private const val KEY_COMPLETED_CLEANUP_ALBUMS = "completed_cleanup_albums"
+        private const val KEY_ALBUM_CLEANUP_DISPLAY_MODE = "album_cleanup_display_mode"
 
         const val DEFAULT_BATCH_SIZE = 15
         const val DEFAULT_TAGS_PER_ROW = 7
@@ -611,6 +946,14 @@ enum class SwipeStyle {
 enum class TagSelectionMode {
     SWIPE_AUTO,    // 下滑自动选择 - 下滑时标签自动切换，松手归类
     FIXED_TAP      // 固定标签点击 - 标签固定显示，点击即归类
+}
+
+/**
+ * 图集清理显示模式枚举
+ */
+enum class AlbumCleanupDisplayMode {
+    GROUPS,  // 显示组数：共 X 组 · 剩余 X 组
+    PHOTOS   // 显示照片数：共 X 张 · 剩余 X 张
 }
 
 /**

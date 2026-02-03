@@ -101,8 +101,10 @@ object ImageFeatureDetector {
     }
 
     private fun extractMotionPhotoLength(xmp: String): Long? {
-        val liPattern = Regex("<rdf:li[^>]*>", RegexOption.IGNORE_CASE)
-        for (match in liPattern.findAll(xmp)) {
+        // 匹配 <rdf:li ...> 和 <Container:Item .../> 两种格式
+        // 支持自闭合标签和普通标签
+        val tagPattern = Regex("<(?:rdf:li|Container:Item)[^>]*(?:>|/>)", RegexOption.IGNORE_CASE)
+        for (match in tagPattern.findAll(xmp)) {
             val tag = match.value
             val semantic = extractAttribute(tag, "Item:Semantic")
             val mime = extractAttribute(tag, "Item:Mime")

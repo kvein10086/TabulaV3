@@ -1097,6 +1097,7 @@ private class AlbumLayoutCoordinatesHolder(var value: LayoutCoordinates? = null)
 
 /**
  * 记住照片网格项的标识
+ * 使用 EXIF/XMP 数据进行真正的 HDR/Motion 检测
  */
 @Composable
 private fun rememberPhotoGridBadges(
@@ -1104,15 +1105,17 @@ private fun rememberPhotoGridBadges(
     showHdr: Boolean,
     showMotion: Boolean
 ): List<String> {
-    // 简化版本：基于文件名检测
-    // 完整版本应该使用 EXIF 数据 
-    val badges = mutableListOf<String>()
+    val features = com.tabula.v3.ui.util.rememberImageFeatures(
+        image = image,
+        enableHdr = showHdr,
+        enableMotion = showMotion
+    )
     
-    val name = image.displayName.lowercase()
-    if (showHdr && (name.contains("hdr") || name.contains("_hdr"))) {
+    val badges = mutableListOf<String>()
+    if (showHdr && features?.isHdr == true) {
         badges.add("HDR")
     }
-    if (showMotion && (name.contains("mvimg") || name.contains("motion") || name.contains("live"))) {
+    if (showMotion && features?.isMotionPhoto == true) {
         badges.add("Live")
     }
     

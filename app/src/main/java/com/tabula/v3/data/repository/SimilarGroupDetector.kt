@@ -3,6 +3,7 @@ package com.tabula.v3.data.repository
 import android.content.Context
 import com.tabula.v3.data.cache.ImageHashCache
 import com.tabula.v3.data.model.ImageFile
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -25,7 +26,7 @@ data class SimilarGroup(
     val size: Int get() = images.size
     
     /** 组的唯一标识（用于冷却机制） */
-    val id: String get() = "${startTime}_${images.first().id}"
+    val id: String get() = "${startTime}_${images.firstOrNull()?.id ?: 0}"
     
     /** 组的时间跨度（毫秒） */
     val durationMs: Long get() = endTime - startTime
@@ -239,20 +240,37 @@ class SimilarGroupDetector(
         val newResults = mutableMapOf<Long, PerceptualHash.HashResult>()
         
         if (needCompute.isNotEmpty()) {
-            needCompute.chunked(HASH_COMPUTE_BATCH_SIZE).forEach { batch ->
-                val batchResults = batch.map { img ->
-                    async {
-                        img.id to PerceptualHash.computeDHash(context, img.uri)
+            try {
+                needCompute.chunked(HASH_COMPUTE_BATCH_SIZE).forEach { batch ->
+                    val batchResults = batch.map { img ->
+                        async {
+                            try {
+                                img.id to PerceptualHash.computeDHash(context, img.uri)
+                            } catch (e: CancellationException) {
+                                throw e  // 重新抛出取消异常
+                            } catch (e: Exception) {
+                                // 单张图片计算失败不影响其他图片
+                                android.util.Log.w(TAG, "Hash compute failed for ${img.id}: ${e.message}")
+                                img.id to PerceptualHash.HashResult.Failed(e.message ?: "Unknown error")
+                            }
+                        }
+                    }.awaitAll()
+                    
+                    batchResults.forEach { (id, result) ->
+                        newResults[id] = result
                     }
-                }.awaitAll()
-                
-                batchResults.forEach { (id, result) ->
-                    newResults[id] = result
                 }
+                
+                // Step 4: 批量保存新计算的哈希
+                hashCache.saveHashesBatch(newResults)
+            } catch (e: CancellationException) {
+                // 协程取消时重新抛出，让上层正确处理
+                android.util.Log.d(TAG, "Hash computation cancelled")
+                throw e
+            } catch (e: Exception) {
+                // 其他异常记录日志但不中断流程
+                android.util.Log.e(TAG, "Hash computation error: ${e.message}", e)
             }
-            
-            // Step 4: 批量保存新计算的哈希
-            hashCache.saveHashesBatch(newResults)
         }
         
         // Step 5: 合并结果返回

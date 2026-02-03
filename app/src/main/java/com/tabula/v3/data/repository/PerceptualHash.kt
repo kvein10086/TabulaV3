@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
 import androidx.exifinterface.media.ExifInterface
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -115,6 +116,9 @@ object PerceptualHash {
                 
             } catch (e: OutOfMemoryError) {
                 HashResult.Failed("OOM")
+            } catch (e: CancellationException) {
+                // 协程取消异常必须重新抛出，不能被捕获
+                throw e
             } catch (e: Exception) {
                 HashResult.Failed(e.message ?: "Unknown error")
             }

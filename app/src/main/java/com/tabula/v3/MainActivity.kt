@@ -60,6 +60,8 @@ import com.tabula.v3.data.repository.FileOperationManager
 import com.tabula.v3.data.repository.LocalImageRepository
 import com.tabula.v3.data.repository.RecycleBinManager
 import com.tabula.v3.data.repository.RecommendationEngine
+import com.tabula.v3.data.repository.AlbumCleanupEngine
+import com.tabula.v3.data.repository.AlbumCleanupInfo
 import com.tabula.v3.ui.navigation.AppScreen
 import com.tabula.v3.ui.navigation.PredictiveBackContainer
 import com.tabula.v3.ui.screens.AboutScreen
@@ -284,8 +286,24 @@ fun TabulaApp(
     val recycleBinManager = remember { RecycleBinManager.getInstance(context) }
     val albumManager = remember { AlbumManager.getInstance(context) }
     val recommendationEngine = remember { RecommendationEngine.getInstance(context) }
+    val albumCleanupEngine = remember { AlbumCleanupEngine.getInstance(context) }
     val albums by albumManager.albums.collectAsState()
     val albumMappings by albumManager.mappings.collectAsState()
+    
+    // ========== 图集清理状态 ==========
+    var albumCleanupInfos by remember { mutableStateOf<List<AlbumCleanupInfo>>(emptyList()) }
+    
+    // 刷新图集清理信息的回调
+    fun refreshAlbumCleanupInfos() {
+        albumCleanupInfos = albums.map { album ->
+            albumCleanupEngine.getAlbumCleanupInfo(album)
+        }
+    }
+    
+    // 当 albums 变化时刷新清理信息
+    LaunchedEffect(albums) {
+        refreshAlbumCleanupInfos()
+    }
 
     // ========== 同步状态 ==========
     var isSyncing by remember { mutableStateOf(false) }
@@ -613,7 +631,11 @@ fun TabulaApp(
                 quickActionButtonY = y
                 preferences.quickActionButtonX = x
                 preferences.quickActionButtonY = y
-            }
+            },
+            // 图集清理模式
+            albumCleanupEngine = albumCleanupEngine,
+            albumCleanupInfos = albumCleanupInfos,
+            onRefreshAlbumCleanupInfos = { refreshAlbumCleanupInfos() }
         )
     }
 

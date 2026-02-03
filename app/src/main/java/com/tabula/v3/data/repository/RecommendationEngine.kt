@@ -5,6 +5,7 @@ import com.tabula.v3.data.cache.ImageHashCache
 import com.tabula.v3.data.model.ImageFile
 import com.tabula.v3.data.preferences.AppPreferences
 import com.tabula.v3.data.preferences.RecommendMode
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -159,19 +160,28 @@ class RecommendationEngine(
      * 返回完整的一组相似照片（动态大小），按时间顺序排列。
      */
     private suspend fun getSimilarBatch(allImages: List<ImageFile>): List<ImageFile> {
-        // 获取下一个相似组
-        val group = getNextSimilarGroup(allImages)
-        
-        if (group != null) {
-            // 标记该组已处理（进入冷却）
-            markSimilarGroupProcessed(group)
-            android.util.Log.d(TAG, "Returning similar group: ${group.size} images, id=${group.id}")
-            return group.images
+        return try {
+            // 获取下一个相似组
+            val group = getNextSimilarGroup(allImages)
+            
+            if (group != null) {
+                // 标记该组已处理（进入冷却）
+                markSimilarGroupProcessed(group)
+                android.util.Log.d(TAG, "Returning similar group: ${group.size} images, id=${group.id}")
+                group.images
+            } else {
+                // 如果没有可用的相似组，回退到随机模式
+                android.util.Log.d(TAG, "No similar groups available, falling back to random")
+                getRandomWalkBatch(allImages, preferences.batchSize)
+            }
+        } catch (e: CancellationException) {
+            // 协程取消异常必须重新抛出
+            throw e
+        } catch (e: Exception) {
+            // 相似推荐出错时回退到随机模式，保证用户体验
+            android.util.Log.e(TAG, "Similar batch error, falling back to random: ${e.message}", e)
+            getRandomWalkBatch(allImages, preferences.batchSize)
         }
-        
-        // 如果没有可用的相似组，回退到随机模式
-        android.util.Log.d(TAG, "No similar groups available, falling back to random")
-        return getRandomWalkBatch(allImages, preferences.batchSize)
     }
     
     /**

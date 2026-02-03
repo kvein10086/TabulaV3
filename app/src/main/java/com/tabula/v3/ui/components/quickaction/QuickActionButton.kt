@@ -28,13 +28,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.tabula.v3.ui.components.FrostedGlass
 import com.tabula.v3.ui.theme.TabulaColors
 import com.tabula.v3.ui.util.HapticFeedback
 import kotlin.math.roundToInt
@@ -75,16 +76,29 @@ fun QuickActionButton(
         currentY = newPos.y
     }
     
-    // 动画
-    val animatedX by animateFloatAsState(currentX, spring(stiffness = Spring.StiffnessMedium))
-    val animatedY by animateFloatAsState(currentY, spring(stiffness = Spring.StiffnessMedium))
-    
     // 拖动状态
     var isDragging by remember { mutableStateOf(false) }
     var dragStartPosition by remember { mutableStateOf(Offset.Zero) }
     
+    // 动画值 - 仅在非拖动状态下使用
+    val animatedX by animateFloatAsState(
+        targetValue = currentX, 
+        animationSpec = spring(stiffness = Spring.StiffnessHigh),
+        label = "quickActionX"
+    )
+    val animatedY by animateFloatAsState(
+        targetValue = currentY, 
+        animationSpec = spring(stiffness = Spring.StiffnessHigh),
+        label = "quickActionY"
+    )
+    
+    // 实际使用的位置：拖动时直接跟手，非拖动时使用动画
+    val displayX = if (isDragging) currentX else animatedX
+    val displayY = if (isDragging) currentY else animatedY
+    
     val scale by animateFloatAsState(
-        targetValue = if (isDragging) 1.1f else 1.0f
+        targetValue = if (isDragging) 1.1f else 1.0f,
+        label = "quickActionScale"
     )
     
     // 按钮交互状态
@@ -93,13 +107,31 @@ fun QuickActionButton(
     val isLeftPressed by leftInteractionSource.collectIsPressedAsState()
     val isRightPressed by rightInteractionSource.collectIsPressedAsState()
     
+    // 高斯模糊毛玻璃背景渐变
+    val glassGradient = remember {
+        Brush.verticalGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.85f),
+                Color.White.copy(alpha = 0.70f)
+            )
+        )
+    }
+    
+    // 边框渐变 - 提供质感
+    val borderGradient = remember {
+        Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.8f),
+                Color.White.copy(alpha = 0.3f),
+                Color.White.copy(alpha = 0.6f)
+            )
+        )
+    }
+    
     Box(
         modifier = modifier
-            .offset { IntOffset(animatedX.roundToInt(), animatedY.roundToInt()) }
+            .offset { IntOffset(displayX.roundToInt(), displayY.roundToInt()) }
             .scale(scale)
-            .shadow(8.dp, RoundedCornerShape(24.dp))
-            .clip(RoundedCornerShape(24.dp))
-            .background(Color.White.copy(alpha = 0.95f))
             .pointerInput(Unit) {
                 detectDragGesturesAfterLongPress(
                     onDragStart = {
@@ -128,70 +160,82 @@ fun QuickActionButton(
                     }
                 )
             }
-            .padding(4.dp)
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically
+        // 高斯模糊毛玻璃容器
+        FrostedGlass(
+            modifier = Modifier,
+            shape = RoundedCornerShape(24.dp),
+            blurRadius = 20.dp,
+            tintGradient = glassGradient,
+            noiseAlpha = 0.04f,
+            borderBrush = borderGradient,
+            borderWidth = 1.dp,
+            contentAlignment = Alignment.Center
         ) {
-            // 左侧：上一张
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .clickable(
-                        interactionSource = leftInteractionSource,
-                        indication = null,
-                        enabled = hasPrevious && !isDragging
-                    ) {
-                        HapticFeedback.lightTap(context)
-                        onPrevious()
-                    }
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center
+            Row(
+                modifier = Modifier.padding(4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
-                    contentDescription = "上一张",
-                    tint = if (hasPrevious) {
-                        if (isLeftPressed) TabulaColors.EyeGold else Color.DarkGray
-                    } else {
-                        Color.LightGray
-                    },
-                    modifier = Modifier.size(32.dp)
+                // 左侧：上一张
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable(
+                            interactionSource = leftInteractionSource,
+                            indication = null,
+                            enabled = hasPrevious && !isDragging
+                        ) {
+                            HapticFeedback.lightTap(context)
+                            onPrevious()
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
+                        contentDescription = "上一张",
+                        tint = if (hasPrevious) {
+                            if (isLeftPressed) TabulaColors.EyeGold else Color.DarkGray
+                        } else {
+                            Color.LightGray
+                        },
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
+                
+                // 分隔线
+                Box(
+                    modifier = Modifier
+                        .size(width = 1.dp, height = 24.dp)
+                        .background(Color.Gray.copy(alpha = 0.3f))
                 )
-            }
-            
-            // 分隔线
-            Box(
-                modifier = Modifier
-                    .size(width = 1.dp, height = 24.dp)
-                    .background(Color.LightGray.copy(alpha = 0.5f))
-            )
-            
-            // 右侧：下一张
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .clickable(
-                        interactionSource = rightInteractionSource,
-                        indication = null,
-                        enabled = hasNext && !isDragging
-                    ) {
-                        HapticFeedback.lightTap(context)
-                        onNext()
-                    }
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-                    contentDescription = "下一张",
-                    tint = if (hasNext) {
-                        if (isRightPressed) TabulaColors.EyeGold else Color.DarkGray
-                    } else {
-                        Color.LightGray
-                    },
-                    modifier = Modifier.size(32.dp)
-                )
+                
+                // 右侧：下一张
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable(
+                            interactionSource = rightInteractionSource,
+                            indication = null,
+                            enabled = hasNext && !isDragging
+                        ) {
+                            HapticFeedback.lightTap(context)
+                            onNext()
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                        contentDescription = "下一张",
+                        tint = if (hasNext) {
+                            if (isRightPressed) TabulaColors.EyeGold else Color.DarkGray
+                        } else {
+                            Color.LightGray
+                        },
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
             }
         }
     }

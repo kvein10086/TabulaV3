@@ -70,6 +70,7 @@ import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.theme.TabulaColors
 import com.tabula.v3.ui.util.HapticFeedback
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -181,10 +182,78 @@ fun AboutScreen(
         }
     }
 
+    // 启动时恢复下载状态，并验证下载是否仍在进行
     LaunchedEffect(Unit) {
         if (storedDownloadId > 0 && pendingDownloadId == null) {
-            pendingDownloadId = storedDownloadId
-            isDownloading = true
+            // 先查询实际的下载状态
+            val status = queryDownloadStatus(downloadManager, storedDownloadId)
+            when (status) {
+                is DownloadStatus.Running, is DownloadStatus.Paused -> {
+                    // 下载仍在进行，恢复状态
+                    pendingDownloadId = storedDownloadId
+                    isDownloading = true
+                }
+                is DownloadStatus.Completed -> {
+                    // 下载已完成，显示安装对话框
+                    prefs.edit().remove(KEY_PENDING_DOWNLOAD_ID).apply()
+                    if (status.uri != null) {
+                        updateDialogState = UpdateDialogState.InstallReady(status.uri)
+                    }
+                }
+                is DownloadStatus.Failed -> {
+                    // 下载失败，清理状态
+                    prefs.edit().remove(KEY_PENDING_DOWNLOAD_ID).apply()
+                    updateDialogState = UpdateDialogState.Error(mapDownloadError(status.reason))
+                }
+                is DownloadStatus.NotFound -> {
+                    // 下载任务不存在（被用户取消或系统清理），清理状态
+                    prefs.edit().remove(KEY_PENDING_DOWNLOAD_ID).apply()
+                    // 不显示错误，静默恢复到可下载状态
+                }
+            }
+        }
+    }
+
+    // 定期轮询下载状态，防止广播丢失或用户取消下载导致状态不同步
+    LaunchedEffect(isDownloading, pendingDownloadId) {
+        if (!isDownloading || pendingDownloadId == null) return@LaunchedEffect
+        
+        while (isDownloading && pendingDownloadId != null) {
+            delay(3000) // 每3秒检查一次
+            
+            val currentId = pendingDownloadId ?: break
+            val status = queryDownloadStatus(downloadManager, currentId)
+            
+            when (status) {
+                is DownloadStatus.Running, is DownloadStatus.Paused -> {
+                    // 下载仍在进行，继续等待
+                }
+                is DownloadStatus.Completed -> {
+                    // 下载完成（广播可能丢失），手动处理
+                    isDownloading = false
+                    pendingDownloadId = null
+                    prefs.edit().remove(KEY_PENDING_DOWNLOAD_ID).apply()
+                    if (status.uri != null) {
+                        updateDialogState = UpdateDialogState.InstallReady(status.uri)
+                    } else {
+                        updateDialogState = UpdateDialogState.Error("安装文件不可用，请重试下载")
+                    }
+                }
+                is DownloadStatus.Failed -> {
+                    // 下载失败
+                    isDownloading = false
+                    pendingDownloadId = null
+                    prefs.edit().remove(KEY_PENDING_DOWNLOAD_ID).apply()
+                    updateDialogState = UpdateDialogState.Error(mapDownloadError(status.reason))
+                }
+                is DownloadStatus.NotFound -> {
+                    // 下载被取消或不存在，静默恢复
+                    isDownloading = false
+                    pendingDownloadId = null
+                    prefs.edit().remove(KEY_PENDING_DOWNLOAD_ID).apply()
+                    // 不显示错误，让用户可以重新下载
+                }
+            }
         }
     }
 
@@ -899,3 +968,52 @@ private fun mapDownloadError(reason: Int): String {
 }
 
 private const val KEY_PENDING_DOWNLOAD_ID = "pending_download_id"
+
+/**
+ * 下载状态枚举
+ */
+private sealed class DownloadStatus {
+    /** 下载正在进行中 */
+    object Running : DownloadStatus()
+    /** 下载已暂停 */
+    object Paused : DownloadStatus()
+    /** 下载成功完成 */
+    data class Completed(val uri: Uri?) : DownloadStatus()
+    /** 下载失败 */
+    data class Failed(val reason: Int) : DownloadStatus()
+    /** 下载任务不存在（已被取消或清理） */
+    object NotFound : DownloadStatus()
+}
+
+/**
+ * 查询下载任务的当前状态
+ * @param downloadManager DownloadManager 实例
+ * @param downloadId 下载任务ID
+ * @return 下载状态
+ */
+private fun queryDownloadStatus(downloadManager: DownloadManager, downloadId: Long): DownloadStatus {
+    val query = DownloadManager.Query().setFilterById(downloadId)
+    val cursor = downloadManager.query(query)
+    return cursor?.use {
+        if (!it.moveToFirst()) {
+            // 下载任务不存在
+            DownloadStatus.NotFound
+        } else {
+            val status = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+            when (status) {
+                DownloadManager.STATUS_RUNNING -> DownloadStatus.Running
+                DownloadManager.STATUS_PENDING -> DownloadStatus.Running
+                DownloadManager.STATUS_PAUSED -> DownloadStatus.Paused
+                DownloadManager.STATUS_SUCCESSFUL -> {
+                    val uri = downloadManager.getUriForDownloadedFile(downloadId)
+                    DownloadStatus.Completed(uri)
+                }
+                DownloadManager.STATUS_FAILED -> {
+                    val reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                    DownloadStatus.Failed(reason)
+                }
+                else -> DownloadStatus.NotFound
+            }
+        }
+    } ?: DownloadStatus.NotFound
+}

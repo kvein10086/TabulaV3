@@ -66,6 +66,48 @@ class LocalImageRepository(private val context: Context) {
             sortOrder = sortOrder
         )
     }
+    
+    /**
+     * 获取指定相对路径下的图片
+     * 
+     * 用于图集清理功能，通过图集的 systemAlbumPath 获取图片。
+     *
+     * @param relativePath 相对路径（如 "Pictures/Tabula/风景"）
+     * @param sortOrder 排序方式
+     * @return 图片列表
+     */
+    suspend fun getImagesByRelativePath(
+        relativePath: String,
+        sortOrder: SortOrder = SortOrder.DATE_MODIFIED_DESC
+    ): List<ImageFile> = withContext(Dispatchers.IO) {
+        // 确保路径以 / 结尾（MediaStore 的 RELATIVE_PATH 格式）
+        val normalizedPath = if (relativePath.endsWith("/")) relativePath else "$relativePath/"
+        
+        queryImages(
+            selection = "${MediaStore.Images.Media.RELATIVE_PATH} = ?",
+            selectionArgs = arrayOf(normalizedPath),
+            sortOrder = sortOrder
+        )
+    }
+    
+    /**
+     * 从已加载的图片列表中筛选指定图集的图片
+     * 
+     * 这是一个更高效的方法，避免重复查询 MediaStore。
+     * 适用于已经加载了全部图片的场景。
+     *
+     * @param allImages 已加载的全部图片列表
+     * @param albumPath 图集的系统路径（如 "Pictures/Tabula/风景"）
+     * @return 属于该图集的图片列表
+     */
+    fun filterImagesByAlbumPath(
+        allImages: List<ImageFile>,
+        albumPath: String
+    ): List<ImageFile> {
+        // 从路径中提取 bucket 名称（最后一个目录名）
+        val bucketName = albumPath.trimEnd('/').substringAfterLast('/')
+        return allImages.filter { it.bucketDisplayName == bucketName }
+    }
 
     /**
      * 分页获取图片
