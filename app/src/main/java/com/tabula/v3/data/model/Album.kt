@@ -30,6 +30,7 @@ enum class SyncMode {
  * @param systemAlbumPath 对应系统相册的路径（如已同步到系统相册）
  * @param isSyncEnabled 是否启用同步到系统相册
  * @param syncMode 同步模式：COPY（复制）或 MOVE（移动）
+ * @param isHidden 是否隐藏此图集
  */
 data class Album(
     val id: String = UUID.randomUUID().toString(),
@@ -43,7 +44,8 @@ data class Album(
     val imageCount: Int = 0,
     val systemAlbumPath: String? = null,
     val isSyncEnabled: Boolean = false,
-    val syncMode: SyncMode = SyncMode.MOVE  // 默认移动模式
+    val syncMode: SyncMode = SyncMode.MOVE,  // 默认移动模式
+    val isHidden: Boolean = false  // 是否隐藏此图集
 ) {
     companion object {
         /**

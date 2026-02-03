@@ -98,24 +98,12 @@ fun AlbumCleanupBottomSheet(
     var pendingResetAlbum by remember { mutableStateOf<Album?>(null) }
     
     // 显示所有图集（包括已完成的），已完成的会有特殊标记
-    // 排序规则：未完成的在前（按剩余组数降序），已完成的在后
-    val displayAlbums = albums.sortedWith(compareBy(
-        // 第一优先级：已完成的排在后面
-        { info -> 
-            val cleanupInfo = albumCleanupInfos.find { it.album.id == info.id }
-            cleanupInfo?.isCompleted == true
-        },
-        // 第二优先级：有进度的排在前面（剩余组数升序，即进度越多越靠前）
-        { info ->
-            val cleanupInfo = albumCleanupInfos.find { it.album.id == info.id }
-            // 未分析的排在有进度的后面（用 Int.MAX_VALUE）
-            if (cleanupInfo == null || cleanupInfo.totalGroups < 0) {
-                Int.MAX_VALUE
-            } else {
-                cleanupInfo.remainingGroups
-            }
-        }
-    ))
+    // 排序规则：只有已完成的置底，其他保持原有顺序
+    val displayAlbums = albums.sortedBy { album ->
+        val cleanupInfo = albumCleanupInfos.find { it.album.id == album.id }
+        // 只有已完成的排到后面，其他（未分析、正在清理）保持原有顺序
+        cleanupInfo?.isCompleted == true
+    }
     
     ModalBottomSheet(
         onDismissRequest = onDismiss,

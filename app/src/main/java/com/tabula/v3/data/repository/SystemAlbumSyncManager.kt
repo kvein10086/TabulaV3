@@ -225,6 +225,51 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
     }
 
     /**
+     * 删除空的系统相册（根据相对路径）
+     * 
+     * 仅当文件夹为空时才删除，用于删除空图集功能。
+     * 
+     * @param relativePath 相对路径（如 "Pictures/Tabula/MyAlbum"）
+     * @return true 删除成功，false 删除失败（文件夹不为空或不存在）
+     */
+    suspend fun deleteBucket(relativePath: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val externalStorage = Environment.getExternalStorageDirectory()
+            val albumFolder = File(externalStorage, relativePath)
+            
+            if (!albumFolder.exists()) {
+                Log.w(TAG, "Bucket folder does not exist: $relativePath")
+                return@withContext false
+            }
+            
+            // 检查文件夹是否为空（忽略隐藏文件如 .nomedia）
+            val files = albumFolder.listFiles() ?: emptyArray()
+            val nonHiddenFiles = files.filter { !it.name.startsWith(".") }
+            
+            if (nonHiddenFiles.isNotEmpty()) {
+                Log.w(TAG, "Cannot delete non-empty bucket: $relativePath (${nonHiddenFiles.size} files)")
+                return@withContext false
+            }
+            
+            // 删除隐藏文件
+            files.forEach { it.delete() }
+            
+            // 删除文件夹
+            val deleted = albumFolder.delete()
+            if (deleted) {
+                Log.d(TAG, "Deleted empty bucket: $relativePath")
+            } else {
+                Log.e(TAG, "Failed to delete bucket: $relativePath")
+            }
+            
+            return@withContext deleted
+        } catch (e: Exception) {
+            Log.e(TAG, "Error deleting bucket: $relativePath", e)
+            false
+        }
+    }
+
+    /**
      * 重命名系统相册
      */
     suspend fun renameSystemAlbum(oldName: String, newName: String): String? = withContext(Dispatchers.IO) {

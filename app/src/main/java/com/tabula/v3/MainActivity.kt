@@ -295,6 +295,7 @@ fun TabulaApp(
     var selectedAlbumId by remember { mutableStateOf<String?>(null) }
     var selectedBucketName by remember { mutableStateOf<String?>(null) }
     var isAlbumMode by remember { mutableStateOf(false) }
+    var showHiddenAlbums by remember { mutableStateOf(false) }
 
     // ========== 图片数据状态 ==========
     var allImages by remember { mutableStateOf<List<ImageFile>>(emptyList()) }
@@ -313,6 +314,10 @@ fun TabulaApp(
     
     // ========== 图集清理状态 ==========
     var albumCleanupInfos by remember { mutableStateOf<List<AlbumCleanupInfo>>(emptyList()) }
+    
+    // 图集清理模式状态（提升到 TabulaApp 级别，避免导航时丢失）
+    var isAlbumCleanupMode by remember { mutableStateOf(false) }
+    var selectedCleanupAlbum by remember { mutableStateOf<Album?>(null) }
     
     // 刷新图集清理信息的回调
     fun refreshAlbumCleanupInfos() {
@@ -336,10 +341,11 @@ fun TabulaApp(
     // ========== 原图删除提醒状态 ==========
     var showSourceImageDeletionDialog by remember { mutableStateOf(false) }
     var pendingSourceImageUris by remember { mutableStateOf<List<android.net.Uri>>(emptyList()) }
+    var sourceImageDeletionStrategy by remember { mutableStateOf(preferences.sourceImageDeletionStrategy) }
     
     // 监听图集模式切换，当切换到图集界面时检查是否需要提醒删除原图
-    LaunchedEffect(isAlbumMode, preferences.sourceImageDeletionStrategy) {
-        if (isAlbumMode && preferences.sourceImageDeletionStrategy == SourceImageDeletionStrategy.ASK_EVERY_TIME) {
+    LaunchedEffect(isAlbumMode, sourceImageDeletionStrategy) {
+        if (isAlbumMode && sourceImageDeletionStrategy == SourceImageDeletionStrategy.ASK_EVERY_TIME) {
             // 获取所有待删除的原图
             val cleanableResult = albumManager.getCleanableUrisForAllAlbums()
             if (!cleanableResult.isEmpty && cleanableResult.sourceUris.isNotEmpty()) {
@@ -632,29 +638,9 @@ fun TabulaApp(
             tagSwitchSpeed = tagSwitchSpeed,
             isAlbumMode = isAlbumMode,
             onModeChange = { isAlbumMode = it },
-            // 清理所有图集的原图
-            onCleanupAllAlbums = {
-                scope.launch {
-                    val cleanableResult = albumManager.getCleanableUrisForAllAlbums()
-                    if (cleanableResult.isEmpty) {
-                        Toast.makeText(context, "没有需要清理的原图", Toast.LENGTH_SHORT).show()
-                        return@launch
-                    }
-                    
-                    Toast.makeText(context, "正在清理 ${cleanableResult.sourceUris.size} 张原图...", Toast.LENGTH_SHORT).show()
-                    
-                    performDeleteUris(cleanableResult.sourceUris) { deletedUris ->
-                        if (deletedUris.isNotEmpty()) {
-                            scope.launch {
-                                albumManager.clearDeletedUris(deletedUris)
-                            }
-                            Toast.makeText(context, "已清理 ${deletedUris.size} 张原图", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(context, "清理失败或已取消", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
-            },
+            // 显示/隐藏 隐藏的图集
+            showHiddenAlbums = showHiddenAlbums,
+            onToggleShowHidden = { showHiddenAlbums = !showHiddenAlbums },
             onBatchRemainingChange = { remaining ->
                 // 更新流体云的批次剩余数量
                 (context as? MainActivity)?.updateBatchRemaining(remaining, fluidCloudEnabled)
@@ -672,7 +658,12 @@ fun TabulaApp(
             // 图集清理模式
             albumCleanupEngine = albumCleanupEngine,
             albumCleanupInfos = albumCleanupInfos,
-            onRefreshAlbumCleanupInfos = { refreshAlbumCleanupInfos() }
+            onRefreshAlbumCleanupInfos = { refreshAlbumCleanupInfos() },
+            // 图集清理模式状态（提升到 TabulaApp 级别）
+            isAlbumCleanupMode = isAlbumCleanupMode,
+            onAlbumCleanupModeChange = { isAlbumCleanupMode = it },
+            selectedCleanupAlbum = selectedCleanupAlbum,
+            onSelectedCleanupAlbumChange = { selectedCleanupAlbum = it }
         )
     }
 
@@ -876,10 +867,12 @@ fun TabulaApp(
             textColor = if (isDark) Color.White else Color.Black,
             secondaryTextColor = Color(0xFF8E8E93),
             accentColor = TabulaColors.EyeGold,
-            sourceImageDeletionStrategy = preferences.sourceImageDeletionStrategy,
+            sourceImageDeletionStrategy = sourceImageDeletionStrategy,
             onSourceImageDeletionStrategyChange = { strategy ->
+                sourceImageDeletionStrategy = strategy
                 preferences.sourceImageDeletionStrategy = strategy
-                Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
+                val message = if (strategy == SourceImageDeletionStrategy.ASK_EVERY_TIME) "提醒已开启" else "提醒已关闭"
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             },
             onNavigateBack = { currentScreen = AppScreen.SETTINGS }
         )
@@ -986,6 +979,22 @@ fun TabulaApp(
             onDeleteAlbum = { albumId ->
                 scope.launch { albumManager.deleteAlbum(albumId) }
             },
+            onHideAlbum = { albumId ->
+                scope.launch { 
+                    albumManager.hideAlbum(albumId)
+                    Toast.makeText(context, "相册已隐藏", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onDeleteEmptyAlbum = { albumId ->
+                scope.launch {
+                    val success = albumManager.deleteEmptyAlbum(albumId)
+                    if (success) {
+                        Toast.makeText(context, "相册已删除", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "删除失败", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
             onNavigateBack = { currentScreen = AppScreen.DECK },
             initialAlbumId = selectedAlbumId,
             showHdrBadges = showHdrBadges,
@@ -1002,29 +1011,6 @@ fun TabulaApp(
             onCopyToAlbum = { imageIds, targetAlbumId ->
                 scope.launch {
                     albumManager.copyImagesToAlbum(imageIds, targetAlbumId)
-                }
-            },
-            // 清理当前图集的原图
-            onCleanupAlbum = { albumId ->
-                scope.launch {
-                    val cleanableResult = albumManager.getCleanableUrisForAlbum(albumId)
-                    if (cleanableResult.isEmpty) {
-                        Toast.makeText(context, "没有需要清理的原图", Toast.LENGTH_SHORT).show()
-                        return@launch
-                    }
-                    
-                    Toast.makeText(context, "正在清理 ${cleanableResult.sourceUris.size} 张原图...", Toast.LENGTH_SHORT).show()
-                    
-                    performDeleteUris(cleanableResult.sourceUris) { deletedUris ->
-                        if (deletedUris.isNotEmpty()) {
-                            scope.launch {
-                                albumManager.clearDeletedUris(deletedUris)
-                            }
-                            Toast.makeText(context, "已清理 ${deletedUris.size} 张原图", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(context, "清理失败或已取消", Toast.LENGTH_SHORT).show()
-                        }
-                    }
                 }
             }
         )

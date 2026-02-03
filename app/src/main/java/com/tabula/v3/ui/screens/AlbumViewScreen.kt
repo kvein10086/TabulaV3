@@ -47,6 +47,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
@@ -121,6 +122,8 @@ fun AlbumViewScreen(
     onCreateAlbum: (name: String, color: Long?, emoji: String?) -> Unit,
     onUpdateAlbum: (Album) -> Unit,
     onDeleteAlbum: (String) -> Unit,
+    onHideAlbum: ((String) -> Unit)? = null,
+    onDeleteEmptyAlbum: ((String) -> Unit)? = null,
     onNavigateBack: () -> Unit,
     initialAlbumId: String? = null,
     showHdrBadges: Boolean = false,
@@ -128,8 +131,7 @@ fun AlbumViewScreen(
     playMotionSound: Boolean = false,
     motionSoundVolume: Int = 100,
     onMoveToAlbum: ((List<Long>, String) -> Unit)? = null,
-    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null,
-    onCleanupAlbum: ((String) -> Unit)? = null
+    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val context = LocalContext.current
@@ -146,7 +148,6 @@ fun AlbumViewScreen(
 
     // 状态
     var editingAlbum by remember { mutableStateOf<Album?>(null) }
-    var deletingAlbum by remember { mutableStateOf<Album?>(null) }
     var viewerState by remember { mutableStateOf<SwipeableViewerState?>(null) }
     var albumImages by remember { mutableStateOf<List<ImageFile>>(emptyList()) }
     
@@ -240,7 +241,12 @@ fun AlbumViewScreen(
                     )
                 },
                 onEditClick = { editingAlbum = currentAlbum },
-                onDeleteClick = { deletingAlbum = currentAlbum },
+                onHideClick = onHideAlbum?.let { callback -> 
+                    { callback(currentAlbum.id); onNavigateBack() }
+                },
+                onDeleteEmptyClick = if (onDeleteEmptyAlbum != null && currentAlbum.imageCount == 0) {
+                    { onDeleteEmptyAlbum(currentAlbum.id); onNavigateBack() }
+                } else null,
                 onSetCover = if (onUpdateAlbum != null) { imageId ->
                     val updatedAlbum = currentAlbum.copy(coverImageId = imageId)
                     onUpdateAlbum(updatedAlbum)
@@ -249,8 +255,7 @@ fun AlbumViewScreen(
                 albums = albums,
                 allImages = allImages,
                 onMoveToAlbum = onMoveToAlbum,
-                onCopyToAlbum = onCopyToAlbum,
-                onCleanupAlbum = onCleanupAlbum
+                onCopyToAlbum = onCopyToAlbum
             )
         } else {
              // Loading state
@@ -286,19 +291,6 @@ fun AlbumViewScreen(
         )
     }
 
-    // 删除确认对话框
-    deletingAlbum?.let { album ->
-        AlbumDeleteConfirmDialog(
-            albumName = album.name,
-            imageCount = album.imageCount,
-            onConfirm = {
-                onDeleteAlbum(album.id)
-                deletingAlbum = null
-                onNavigateBack() // 删除后退出
-            },
-            onDismiss = { deletingAlbum = null }
-        )
-    }
 }
 
 /**
@@ -315,14 +307,14 @@ private fun AlbumContentView(
     showMotionBadges: Boolean = false,
     onImageClick: (ImageFile, SourceRect) -> Unit,
     onEditClick: () -> Unit,
-    onDeleteClick: () -> Unit,
+    onHideClick: (() -> Unit)? = null,
+    onDeleteEmptyClick: (() -> Unit)? = null,
     onSetCover: ((Long) -> Unit)? = null,
     onNavigateBack: () -> Unit,
     albums: List<Album> = emptyList(),
     allImages: List<ImageFile> = emptyList(),
     onMoveToAlbum: ((List<Long>, String) -> Unit)? = null,
-    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null,
-    onCleanupAlbum: ((String) -> Unit)? = null
+    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     var showMenu by remember { mutableStateOf(false) }
@@ -336,8 +328,11 @@ private fun AlbumContentView(
     var showAlbumPicker by remember { mutableStateOf(false) }
     var isCopyMode by remember { mutableStateOf(false) }  // true=复制, false=移动
     
-    // 清理旧图确认弹窗状态
-    var showCleanupConfirm by remember { mutableStateOf(false) }
+    // 隐藏确认弹窗状态
+    var showHideConfirm by remember { mutableStateOf(false) }
+    
+    // 删除空图集确认弹窗状态
+    var showDeleteEmptyConfirm by remember { mutableStateOf(false) }
     
     // 退出多选模式
     fun exitSelectionMode() {
@@ -516,8 +511,8 @@ private fun AlbumContentView(
                                 modifier = Modifier.padding(horizontal = 4.dp)
                             )
                             
-                            // 清理旧图（仅当有图片且回调存在时显示）
-                            if (onCleanupAlbum != null && images.isNotEmpty()) {
+                            // 隐藏相册（如果有回调）
+                            if (onHideClick != null) {
                                 // 分隔线
                                 Box(
                                     modifier = Modifier
@@ -530,18 +525,18 @@ private fun AlbumContentView(
                                 DropdownMenuItem(
                                     text = { 
                                         Text(
-                                            "清理旧图",
+                                            "隐藏相册",
                                             color = textColor,
                                             fontWeight = FontWeight.Medium
                                         ) 
                                     },
                                     onClick = {
                                         showMenu = false
-                                        showCleanupConfirm = true
+                                        showHideConfirm = true
                                     },
                                     leadingIcon = {
                                         Icon(
-                                            Icons.Outlined.Delete,
+                                            Icons.Outlined.VisibilityOff, 
                                             contentDescription = null,
                                             tint = secondaryTextColor,
                                             modifier = Modifier.size(20.dp)
@@ -551,38 +546,40 @@ private fun AlbumContentView(
                                 )
                             }
                             
-                            // 分隔线
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp)
-                                    .height(0.5.dp)
-                                    .background(secondaryTextColor.copy(alpha = 0.2f))
-                            )
-                            
-                            // 删除相册
-                            DropdownMenuItem(
-                                text = { 
-                                    Text(
-                                        "删除相册", 
-                                        color = Color(0xFFFF3B30),
-                                        fontWeight = FontWeight.Medium
-                                    ) 
-                                },
-                                onClick = {
-                                    showMenu = false
-                                    onDeleteClick()
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Outlined.Delete,
-                                        contentDescription = null,
-                                        tint = Color(0xFFFF3B30),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                },
-                                modifier = Modifier.padding(horizontal = 4.dp)
-                            )
+                            // 删除相册（仅空图集可用）
+                            if (onDeleteEmptyClick != null) {
+                                // 分隔线
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                                        .height(0.5.dp)
+                                        .background(secondaryTextColor.copy(alpha = 0.2f))
+                                )
+                                
+                                DropdownMenuItem(
+                                    text = { 
+                                        Text(
+                                            "删除相册", 
+                                            color = Color(0xFFFF3B30),
+                                            fontWeight = FontWeight.Medium
+                                        ) 
+                                    },
+                                    onClick = {
+                                        showMenu = false
+                                        showDeleteEmptyConfirm = true
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Outlined.Delete,
+                                            contentDescription = null,
+                                            tint = Color(0xFFFF3B30),
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    },
+                                    modifier = Modifier.padding(horizontal = 4.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -819,41 +816,85 @@ private fun AlbumContentView(
             )
         }
         
-        // 清理旧图确认对话框
-        if (showCleanupConfirm) {
+        // 隐藏相册确认对话框
+        if (showHideConfirm) {
             androidx.compose.material3.AlertDialog(
-                onDismissRequest = { showCleanupConfirm = false },
+                onDismissRequest = { showHideConfirm = false },
                 containerColor = if (isDarkTheme) Color(0xFF1C1C1E) else Color.White,
                 title = {
                     Text(
-                        text = "清理旧图",
+                        text = "隐藏相册",
                         color = if (isDarkTheme) Color.White else Color.Black,
                         fontWeight = FontWeight.Bold
                     )
                 },
                 text = {
                     Text(
-                        text = "将删除此图集中图片在旧位置的文件（包括原图和移动残留）。\n\n当前图集中的图片不受影响。已清理过的会自动跳过。",
+                        text = "隐藏「${album.name}」？\n\n隐藏后相册不会在列表中显示，但不会删除任何文件。你可以通过图库导航栏的眼睛图标重新显示隐藏的相册。",
                         color = if (isDarkTheme) Color(0xFFAEAEB2) else Color(0xFF3C3C43)
                     )
                 },
                 confirmButton = {
                     TextButton(
                         onClick = {
-                            onCleanupAlbum?.invoke(album.id)
-                            showCleanupConfirm = false
+                            onHideClick?.invoke()
+                            showHideConfirm = false
                             HapticFeedback.mediumTap(context)
                         }
                     ) {
                         Text(
-                            text = "清理",
+                            text = "隐藏",
+                            color = Color(0xFF007AFF),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showHideConfirm = false }) {
+                        Text(
+                            text = "取消",
+                            color = Color(0xFF8E8E93)
+                        )
+                    }
+                }
+            )
+        }
+        
+        // 删除空图集确认对话框
+        if (showDeleteEmptyConfirm) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { showDeleteEmptyConfirm = false },
+                containerColor = if (isDarkTheme) Color(0xFF1C1C1E) else Color.White,
+                title = {
+                    Text(
+                        text = "删除相册",
+                        color = if (isDarkTheme) Color.White else Color.Black,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Text(
+                        text = "确定删除「${album.name}」？\n\n这将删除该相册的文件夹。此操作不可撤销。",
+                        color = if (isDarkTheme) Color(0xFFAEAEB2) else Color(0xFF3C3C43)
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onDeleteEmptyClick?.invoke()
+                            showDeleteEmptyConfirm = false
+                            HapticFeedback.mediumTap(context)
+                        }
+                    ) {
+                        Text(
+                            text = "删除",
                             color = Color(0xFFFF3B30),
                             fontWeight = FontWeight.Bold
                         )
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showCleanupConfirm = false }) {
+                    TextButton(onClick = { showDeleteEmptyConfirm = false }) {
                         Text(
                             text = "取消",
                             color = Color(0xFF007AFF)

@@ -39,7 +39,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -182,8 +185,9 @@ fun DeckScreen(
     // 模式切换
     isAlbumMode: Boolean = false,
     onModeChange: (Boolean) -> Unit = {},
-    // 清理所有图集原图
-    onCleanupAllAlbums: (() -> Unit)? = null,
+    // 显示/隐藏 隐藏的图集
+    showHiddenAlbums: Boolean = false,
+    onToggleShowHidden: () -> Unit = {},
     // 流体云：批次剩余数量回调
     onBatchRemainingChange: (Int) -> Unit = {},
     // 快捷操作按钮
@@ -194,7 +198,12 @@ fun DeckScreen(
     // 图集清理模式
     albumCleanupEngine: AlbumCleanupEngine? = null,
     albumCleanupInfos: List<AlbumCleanupInfo> = emptyList(),
-    onRefreshAlbumCleanupInfos: () -> Unit = {}
+    onRefreshAlbumCleanupInfos: () -> Unit = {},
+    // 图集清理模式状态（从 TabulaApp 传入，避免导航时丢失）
+    isAlbumCleanupMode: Boolean = false,
+    onAlbumCleanupModeChange: (Boolean) -> Unit = {},
+    selectedCleanupAlbum: Album? = null,
+    onSelectedCleanupAlbumChange: (Album?) -> Unit = {}
 ) {
     val context = LocalContext.current
     val isDarkTheme = LocalIsDarkTheme.current
@@ -243,8 +252,7 @@ fun DeckScreen(
     
     // ========== 图集清理模式状态 ==========
     var showAlbumCleanupSheet by remember { mutableStateOf(false) }
-    var isAlbumCleanupMode by remember { mutableStateOf(false) }
-    var selectedCleanupAlbum by remember { mutableStateOf<Album?>(null) }
+    // isAlbumCleanupMode 和 selectedCleanupAlbum 现在从外部传入（TabulaApp 级别管理）
     var analyzingAlbumId by remember { mutableStateOf<String?>(null) }
     var analysisProgress by remember { mutableStateOf(0f) }
     var currentCleanupBatch by remember { mutableStateOf<AlbumCleanupBatch?>(null) }
@@ -323,9 +331,76 @@ fun DeckScreen(
         }
     }
 
+    // 图集清理模式恢复：当从设置返回时，状态已保持但批次数据需要重新加载
+    androidx.compose.runtime.LaunchedEffect(isAlbumCleanupMode, selectedCleanupAlbum, allImages, isLoading) {
+        // 如果处于图集清理模式，但批次数据为空（组件重建后丢失），需要恢复
+        if (isAlbumCleanupMode && selectedCleanupAlbum != null && currentCleanupBatch == null && 
+            allImages.isNotEmpty() && !isLoading && albumCleanupEngine != null) {
+            android.util.Log.d("DeckScreen", "Restoring album cleanup mode for: ${selectedCleanupAlbum?.name}")
+            
+            val album = selectedCleanupAlbum!!
+            val albumImages = allImages.filter { img ->
+                album.systemAlbumPath?.let { path ->
+                    val bucketName = path.trimEnd('/').substringAfterLast('/')
+                    img.bucketDisplayName == bucketName
+                } ?: false
+            }
+            
+            if (albumImages.isEmpty()) {
+                // 图集没有图片，退出清理模式
+                onAlbumCleanupModeChange(false)
+                onSelectedCleanupAlbumChange(null)
+                return@LaunchedEffect
+            }
+            
+            // 尝试从断点恢复
+            val checkpointResult = albumCleanupEngine.getCheckpointBatch(album.id, albumImages)
+            if (checkpointResult != null) {
+                val (batch, savedIndex) = checkpointResult
+                currentCleanupBatch = batch
+                currentBatch = batch.images
+                currentIndex = savedIndex
+                lastSavedIndex = savedIndex
+                markedCount = 0
+                deckState = DeckState.BROWSING
+                needsInitialBatch = false
+                
+                albumCleanupTotalGroups = albumCleanupEngine.getTotalGroups(album.id)
+                albumCleanupRemainingGroups = albumCleanupEngine.getRemainingGroups(album.id)
+                albumCleanupTotalImages = albumCleanupEngine.getTotalImages(album.id)
+                albumCleanupRemainingImages = albumCleanupEngine.getRemainingImages(album.id)
+                
+                android.util.Log.d("DeckScreen", "Restored from checkpoint: index=$savedIndex")
+            } else {
+                // 没有断点，获取下一批
+                val batch = albumCleanupEngine.getNextBatch(album.id, albumImages)
+                if (batch != null) {
+                    currentCleanupBatch = batch
+                    currentBatch = batch.images
+                    currentIndex = 0
+                    lastSavedIndex = -1
+                    markedCount = 0
+                    deckState = DeckState.BROWSING
+                    needsInitialBatch = false
+                    
+                    albumCleanupTotalGroups = albumCleanupEngine.getTotalGroups(album.id)
+                    albumCleanupRemainingGroups = albumCleanupEngine.getRemainingGroups(album.id)
+                    albumCleanupTotalImages = albumCleanupEngine.getTotalImages(album.id)
+                    albumCleanupRemainingImages = albumCleanupEngine.getRemainingImages(album.id)
+                } else {
+                    // 图集清理完成
+                    deckState = DeckState.COMPLETED
+                    onRefreshAlbumCleanupInfos()
+                }
+            }
+        }
+    }
+
     // 异步初始化批次
     androidx.compose.runtime.LaunchedEffect(allImages, isLoading, needsInitialBatch) {
         android.util.Log.d("DeckScreen", "LaunchedEffect: allImages.size=${allImages.size}, isLoading=$isLoading, needsInitialBatch=$needsInitialBatch, currentBatch.isEmpty=${currentBatch.isEmpty()}")
+        // 图集清理模式下跳过全局批次初始化
+        if (isAlbumCleanupMode) return@LaunchedEffect
         if (currentBatch.isEmpty() && allImages.isNotEmpty() && !isLoading && needsInitialBatch) {
             android.util.Log.d("DeckScreen", "Starting batch fetch...")
             try {
@@ -432,7 +507,7 @@ fun DeckScreen(
                 val nextAlbum = randomInfo.album
                 
                 // 切换到新图集
-                selectedCleanupAlbum = nextAlbum
+                onSelectedCleanupAlbumChange(nextAlbum)
                 albumCleanupEngine.exitCleanupMode()  // 先退出当前模式
                 
                 // 获取新图集的图片
@@ -849,7 +924,8 @@ fun DeckScreen(
                     onReorderAlbums = onReorderAlbums,
                     onSyncClick = onSyncClick,
                     onSettingsClick = onNavigateToSettings,
-                    onCleanupAllAlbums = onCleanupAllAlbums
+                    showHiddenAlbums = showHiddenAlbums,
+                    onToggleShowHidden = onToggleShowHidden
                 )
             }
         }
@@ -1096,7 +1172,7 @@ fun DeckScreen(
             if (checkpointResult != null) {
                 // 有断点，从断点恢复
                 val (batch, savedIndex) = checkpointResult
-                isAlbumCleanupMode = true
+                onAlbumCleanupModeChange(true)
                 currentCleanupBatch = batch
                 currentBatch = batch.images
                 currentIndex = savedIndex
@@ -1114,7 +1190,7 @@ fun DeckScreen(
                 // 没有断点，正常获取下一批
                 val batch = engine.getNextBatch(album.id, albumImages)
                 if (batch != null) {
-                    isAlbumCleanupMode = true
+                    onAlbumCleanupModeChange(true)
                     currentCleanupBatch = batch
                     currentBatch = batch.images
                     currentIndex = 0
@@ -1133,8 +1209,8 @@ fun DeckScreen(
                     albumCleanupTotalImages = 0
                     albumCleanupRemainingImages = 0
                     
-                    isAlbumCleanupMode = true
-                    selectedCleanupAlbum = album
+                    onAlbumCleanupModeChange(true)
+                    onSelectedCleanupAlbumChange(album)
                     currentCleanupBatch = null
                     currentBatch = emptyList()
                     deckState = DeckState.COMPLETED
@@ -1155,7 +1231,7 @@ fun DeckScreen(
             analyzingAlbumId = analyzingAlbumId,
             analysisProgress = analysisProgress,
             onSelectAlbum = { album ->
-                selectedCleanupAlbum = album
+                onSelectedCleanupAlbumChange(album)
             },
             onSwitchToGlobal = {
                 // 保存断点（如果当前正在清理图集）
@@ -1164,13 +1240,17 @@ fun DeckScreen(
                 }
                 
                 // 切换回全局整理模式
-                isAlbumCleanupMode = false
-                selectedCleanupAlbum = null
+                onAlbumCleanupModeChange(false)
+                onSelectedCleanupAlbumChange(null)
                 currentCleanupBatch = null
                 lastSavedIndex = -1
                 albumCleanupEngine.exitCleanupMode()
                 showAlbumCleanupSheet = false
-                // 重新加载全局批次
+                // 清空当前批次并重置索引，触发 LaunchedEffect 重新加载全局批次
+                currentBatch = emptyList()
+                currentIndex = 0
+                markedCount = 0
+                deckState = DeckState.BROWSING  // 重置为浏览状态，避免显示"完成"页面
                 needsInitialBatch = true
             },
             onDismiss = {
@@ -1183,7 +1263,7 @@ fun DeckScreen(
             },
             onResetAndStartCleanup = { album ->
                 // 重置并重新开始清理（用于已完成的图集）
-                selectedCleanupAlbum = album
+                onSelectedCleanupAlbumChange(album)
                 startAlbumCleanup(album, forceReset = true)
             }
         )
@@ -1635,7 +1715,8 @@ private fun AlbumsGridContent(
     onReorderAlbums: (List<String>) -> Unit = {},
     onSyncClick: () -> Unit = {},
     onSettingsClick: () -> Unit = {},
-    onCleanupAllAlbums: (() -> Unit)? = null
+    showHiddenAlbums: Boolean = false,
+    onToggleShowHidden: () -> Unit = {}
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val context = LocalContext.current
@@ -1644,7 +1725,9 @@ private fun AlbumsGridContent(
     val secondaryTextColor = if (isDarkTheme) Color(0xFF8E8E93) else Color(0xFF8E8E93)
 
     var showCreateDialog by remember { mutableStateOf(false) }
-    var showCleanupAllConfirm by remember { mutableStateOf(false) }
+    
+    // 计算是否有隐藏的图集
+    val hasHiddenAlbums = albums.any { it.isHidden }
     
     // 简化后只显示 App 图集，移除了 Tab 切换功能
 
@@ -1664,6 +1747,13 @@ private fun AlbumsGridContent(
     // 顶部内容间距
     val contentTopPadding = topBarVisibleHeight + 8.dp
 
+    // 根据 showHiddenAlbums 过滤显示的图集
+    val displayAlbums = if (showHiddenAlbums) {
+        albums  // 显示所有图集（包括隐藏的）
+    } else {
+        albums.filter { !it.isHidden }  // 只显示未隐藏的图集
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1671,7 +1761,7 @@ private fun AlbumsGridContent(
     ) {
         // 内容区域
         CategorizedAlbumsView(
-                appAlbums = albums,
+                appAlbums = displayAlbums,
                 systemBuckets = null,  // 简化：只显示 App 图集
                 allImages = allImages,
                 onAppAlbumClick = onAlbumClick,
@@ -1728,17 +1818,25 @@ private fun AlbumsGridContent(
                         modifier = Modifier.align(Alignment.CenterEnd),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // 清理旧图按钮（仅当有图集且有回调时显示）
-                        if (onCleanupAllAlbums != null && albums.isNotEmpty()) {
+                        // 显示/隐藏 隐藏图集按钮（仅当有隐藏图集时显示）
+                        if (hasHiddenAlbums) {
                             ActionIconButton(
-                                icon = Icons.Outlined.Delete,
-                                contentDescription = "清理旧图",
+                                icon = if (showHiddenAlbums) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                                contentDescription = if (showHiddenAlbums) "隐藏已隐藏的图集" else "显示隐藏的图集",
                                 onClick = {
                                     com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                                    showCleanupAllConfirm = true
+                                    onToggleShowHidden()
                                 },
-                                backgroundColor = buttonBgColor,
-                                iconColor = buttonIconColor
+                                backgroundColor = if (showHiddenAlbums) {
+                                    Color(0xFF007AFF).copy(alpha = 0.15f)
+                                } else {
+                                    buttonBgColor
+                                },
+                                iconColor = if (showHiddenAlbums) {
+                                    Color(0xFF007AFF)
+                                } else {
+                                    buttonIconColor
+                                }
                             )
                         }
                         
@@ -1759,50 +1857,6 @@ private fun AlbumsGridContent(
         }
     }
     
-    // 清理所有图集旧图确认对话框
-    if (showCleanupAllConfirm) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showCleanupAllConfirm = false },
-            containerColor = if (isDarkTheme) Color(0xFF1C1C1E) else Color.White,
-            title = {
-                Text(
-                    text = "清理所有旧图",
-                    color = if (isDarkTheme) Color.White else Color.Black,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                Text(
-                    text = "将删除所有图集中图片在旧位置的文件（包括原图和移动残留）。\n\n当前图集中的图片不受影响。已清理过的会自动跳过。",
-                    color = if (isDarkTheme) Color(0xFFAEAEB2) else Color(0xFF3C3C43)
-                )
-            },
-            confirmButton = {
-                androidx.compose.material3.TextButton(
-                    onClick = {
-                        onCleanupAllAlbums?.invoke()
-                        showCleanupAllConfirm = false
-                        com.tabula.v3.ui.util.HapticFeedback.mediumTap(context)
-                    }
-                ) {
-                    Text(
-                        text = "清理",
-                        color = Color(0xFFFF3B30),
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showCleanupAllConfirm = false }) {
-                    Text(
-                        text = "取消",
-                        color = Color(0xFF007AFF)
-                    )
-                }
-            }
-        )
-    }
-
     // 新建图集对话框
     if (showCreateDialog) {
         AlbumEditDialog(

@@ -116,7 +116,8 @@ class AlbumManager(private val context: Context) {
         val color: Long? = null,
         val textColor: Long? = null,
         val order: Int = 0,
-        val createdAt: Long = System.currentTimeMillis()
+        val createdAt: Long = System.currentTimeMillis(),
+        val isHidden: Boolean = false  // 是否隐藏此图集
     )
 
     // ========== 系统相册同步管理器 ==========
@@ -214,6 +215,86 @@ class AlbumManager(private val context: Context) {
         refreshAlbumsFromSystem()
         
         Log.d(TAG, "Removed album metadata: $albumId")
+    }
+
+    /**
+     * 隐藏图集（不删除系统文件夹和图片，只是不显示在列表中）
+     */
+    suspend fun hideAlbum(albumId: String) = withContext(Dispatchers.IO) {
+        val currentMetadata = loadMetadata().toMutableMap()
+        val existing = currentMetadata[albumId]
+        if (existing != null) {
+            currentMetadata[albumId] = existing.copy(isHidden = true)
+        } else {
+            // 创建新的元数据
+            currentMetadata[albumId] = AlbumMetadata(name = albumId, isHidden = true)
+        }
+        saveMetadata(currentMetadata)
+        _metadata.value = currentMetadata
+        
+        // 刷新图集列表
+        refreshAlbumsFromSystem()
+        
+        Log.d(TAG, "Hidden album: $albumId")
+    }
+
+    /**
+     * 取消隐藏图集
+     */
+    suspend fun unhideAlbum(albumId: String) = withContext(Dispatchers.IO) {
+        val currentMetadata = loadMetadata().toMutableMap()
+        val existing = currentMetadata[albumId]
+        if (existing != null) {
+            currentMetadata[albumId] = existing.copy(isHidden = false)
+            saveMetadata(currentMetadata)
+            _metadata.value = currentMetadata
+            
+            // 刷新图集列表
+            refreshAlbumsFromSystem()
+            
+            Log.d(TAG, "Unhidden album: $albumId")
+        }
+    }
+
+    /**
+     * 删除空图集（删除系统文件夹，仅当图集内没有图片时允许）
+     * 
+     * @return true 删除成功，false 删除失败（图集不为空或系统限制）
+     */
+    suspend fun deleteEmptyAlbum(albumId: String): Boolean = withContext(Dispatchers.IO) {
+        // 1. 检查图集是否为空
+        val album = _albums.value.find { it.id == albumId }
+        if (album == null) {
+            Log.w(TAG, "Album not found: $albumId")
+            return@withContext false
+        }
+        
+        if (album.imageCount > 0) {
+            Log.w(TAG, "Cannot delete non-empty album: $albumId (${album.imageCount} images)")
+            return@withContext false
+        }
+        
+        // 2. 尝试删除系统文件夹
+        val deleted = album.systemAlbumPath?.let { path ->
+            syncManager.deleteBucket(path)
+        } ?: false
+        
+        if (deleted) {
+            // 3. 删除元数据
+            val currentMetadata = loadMetadata()
+            val updatedMetadata = currentMetadata - albumId
+            saveMetadata(updatedMetadata)
+            _metadata.value = updatedMetadata
+            
+            // 4. 刷新图集列表
+            refreshAlbumsFromSystem()
+            
+            Log.d(TAG, "Deleted empty album: $albumId")
+        } else {
+            Log.e(TAG, "Failed to delete album folder: $albumId")
+        }
+        
+        return@withContext deleted
     }
 
     /**
@@ -431,18 +512,21 @@ class AlbumManager(private val context: Context) {
     /**
      * 从系统相册刷新图集列表
      * 
-     * 这是核心方法：图集列表 = 系统相册 bucket 列表 + 元数据
+     * 这是核心方法：图集列表 = 系统相册 bucket 列表 + 元数据中的空图集
+     * 
+     * 重要：MediaStore 只返回包含图片的 bucket，所以空图集需要从元数据中恢复。
      */
     suspend fun refreshAlbumsFromSystem() = withContext(Dispatchers.IO) {
         try {
-            // 1. 从系统相册获取所有 bucket
+            // 1. 从系统相册获取所有 bucket（只包含有图片的相册）
             val systemBuckets = imageRepository.getAllBucketsWithInfo()
+            val systemBucketNames = systemBuckets.map { it.name }.toSet()
             
             // 2. 加载本地元数据
             val metadata = loadMetadata()
             
-            // 3. 合并系统数据 + 元数据 -> Album 列表
-            val albums = systemBuckets.map { bucket ->
+            // 3. 从系统 bucket 创建 Album 列表
+            val albumsFromSystem = systemBuckets.map { bucket ->
                 val meta = metadata[bucket.name]
                 Album(
                     id = bucket.name,  // 使用 bucket 名称作为 ID
@@ -455,12 +539,42 @@ class AlbumManager(private val context: Context) {
                     imageCount = bucket.imageCount,
                     systemAlbumPath = bucket.relativePath,
                     isSyncEnabled = true,  // 系统相册集成后，所有都是"已同步"状态
-                    syncMode = SyncMode.MOVE
+                    syncMode = SyncMode.MOVE,
+                    isHidden = meta?.isHidden ?: false
                 )
-            }.sortedWith(compareBy({ it.order }, { -it.imageCount }))  // 先按 order，再按图片数量
+            }
+            
+            // 4. 从元数据中恢复空图集（在系统 bucket 中不存在的图集）
+            // 这解决了新建空图集不显示的问题
+            val emptyAlbumsFromMetadata = metadata.values
+                .filter { meta -> meta.name !in systemBucketNames }
+                .map { meta ->
+                    // 构建相对路径（与 createBucket 保持一致）
+                    val safeName = meta.name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                    val relativePath = "${android.os.Environment.DIRECTORY_PICTURES}/Tabula/$safeName"
+                    
+                    Album(
+                        id = meta.name,
+                        name = meta.name,
+                        coverImageId = null,  // 空图集没有封面
+                        color = meta.color,
+                        textColor = meta.textColor,
+                        order = meta.order,
+                        createdAt = meta.createdAt,
+                        imageCount = 0,  // 空图集
+                        systemAlbumPath = relativePath,
+                        isSyncEnabled = true,
+                        syncMode = SyncMode.MOVE,
+                        isHidden = meta.isHidden
+                    )
+                }
+            
+            // 5. 合并两个来源的图集列表
+            val albums = (albumsFromSystem + emptyAlbumsFromMetadata)
+                .sortedWith(compareBy({ it.order }, { -it.imageCount }))  // 先按 order，再按图片数量
             
             _albums.value = albums
-            Log.d(TAG, "Refreshed ${albums.size} albums from system")
+            Log.d(TAG, "Refreshed ${albums.size} albums from system (${albumsFromSystem.size} with images, ${emptyAlbumsFromMetadata.size} empty)")
         } catch (e: Exception) {
             Log.e(TAG, "Error refreshing albums from system", e)
         }
@@ -611,7 +725,8 @@ class AlbumManager(private val context: Context) {
                     color = obj.optLong("color", -1).takeIf { it != -1L },
                     textColor = obj.optLong("textColor", -1).takeIf { it != -1L },
                     order = obj.optInt("order", Int.MAX_VALUE),
-                    createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+                    createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
+                    isHidden = obj.optBoolean("isHidden", false)
                 )
             }
 
@@ -632,6 +747,7 @@ class AlbumManager(private val context: Context) {
                     put("textColor", meta.textColor ?: -1)
                     put("order", meta.order)
                     put("createdAt", meta.createdAt)
+                    put("isHidden", meta.isHidden)
                 }
                 jsonArray.put(obj)
             }
