@@ -95,6 +95,7 @@ import com.tabula.v3.R
 import com.tabula.v3.data.preferences.AppPreferences
 import com.tabula.v3.data.preferences.CardStyleMode
 import com.tabula.v3.data.preferences.RecommendMode
+import com.tabula.v3.data.preferences.SourceImageDeletionStrategy
 import com.tabula.v3.data.preferences.SwipeStyle
 import com.tabula.v3.data.preferences.TagSelectionMode
 import com.tabula.v3.data.preferences.ThemeMode
@@ -146,6 +147,7 @@ fun SettingsScreen(
     onNavigateToImageDisplay: () -> Unit = {},
     onNavigateToLab: () -> Unit = {},
     onNavigateToSupport: () -> Unit = {},
+    onNavigateToAlbumTagSettings: () -> Unit = {},
     scrollState: ScrollState? = null  // 外部传入的滚动状态，用于保持导航返回时的位置
 ) {
     val context = LocalContext.current
@@ -383,6 +385,21 @@ fun SettingsScreen(
                     onClick = {
                         HapticFeedback.lightTap(context)
                         onNavigateToVibrationSound()
+                    }
+                )
+                
+                Divider(isDarkTheme)
+                
+                SettingsItem(
+                    icon = Icons.Outlined.Collections,
+                    iconTint = Color(0xFFFF9F0A), // Orange
+                    title = "图集标签设置",
+                    value = "",
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor,
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        onNavigateToAlbumTagSettings()
                     }
                 )
             }
@@ -1242,6 +1259,20 @@ fun LabScreen(
                         onTagSelectionModeChange(TagSelectionMode.FIXED_TAP)
                     }
                 )
+                
+                Divider(isDarkTheme)
+                
+                CardStyleOptionItem(
+                    title = "弹层列表选择",
+                    description = "下滑弹出图集列表，适合大量图集",
+                    isSelected = tagSelectionMode == TagSelectionMode.LIST_POPUP,
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor,
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        onTagSelectionModeChange(TagSelectionMode.LIST_POPUP)
+                    }
+                )
             }
             
             // 下滑自动选择模式的详细设置
@@ -1727,6 +1758,159 @@ private fun tryOpenWidgetPicker(context: android.content.Context, onSuccess: () 
         "无法自动打开小组件列表\n请返回桌面 → 长按空白处 → 选择小组件 → 找到 Tabula", 
         Toast.LENGTH_LONG
     ).show()
+}
+
+/**
+ * 图集标签设置页面
+ */
+@Composable
+fun AlbumTagSettingsScreen(
+    backgroundColor: Color,
+    cardColor: Color,
+    textColor: Color,
+    secondaryTextColor: Color,
+    accentColor: Color,
+    sourceImageDeletionStrategy: SourceImageDeletionStrategy,
+    onSourceImageDeletionStrategyChange: (SourceImageDeletionStrategy) -> Unit,
+    onNavigateBack: () -> Unit
+) {
+    val context = LocalContext.current
+    val isDarkTheme = LocalIsDarkTheme.current
+    
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(backgroundColor)
+            .statusBarsPadding()
+    ) {
+        // 顶部栏
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            IconButton(
+                onClick = {
+                    HapticFeedback.lightTap(context)
+                    onNavigateBack()
+                },
+                modifier = Modifier.align(Alignment.CenterStart)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = "返回",
+                    tint = textColor,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            Text(
+                text = "图集标签设置",
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
+                ),
+                color = textColor,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+
+        // 使用 rememberSaveable 保存滚动位置
+        val scrollState = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 20.dp)
+        ) {
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 页面说明
+            Text(
+                text = "归档照片到图集后，可以选择如何处理原位置的照片。",
+                style = MaterialTheme.typography.bodySmall,
+                color = secondaryTextColor.copy(alpha = 0.7f),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // 删除策略开关
+            SectionHeader("原图删除提醒", textColor)
+            SettingsGroup(cardColor) {
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.Delete,
+                    iconTint = Color(0xFFFF9F0A), // Orange
+                    title = "切换图库时提醒删除",
+                    textColor = textColor,
+                    checked = sourceImageDeletionStrategy == SourceImageDeletionStrategy.ASK_EVERY_TIME,
+                    onCheckedChange = { enabled ->
+                        HapticFeedback.lightTap(context)
+                        val newStrategy = if (enabled) {
+                            SourceImageDeletionStrategy.ASK_EVERY_TIME
+                        } else {
+                            SourceImageDeletionStrategy.MANUAL_IN_ALBUMS
+                        }
+                        onSourceImageDeletionStrategyChange(newStrategy)
+                    }
+                )
+                
+                // 说明文字
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 12.dp)
+                ) {
+                    Text(
+                        text = "开启后，当有待删除的原图时，切换到图库界面会弹出提醒询问是否批量删除。关闭则需要在图库界面手动点击删除按钮处理。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor.copy(alpha = 0.7f)
+                    )
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(20.dp))
+            
+            // 安全说明
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFFFF9F0A).copy(alpha = 0.1f))
+                    .padding(16.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Info,
+                        contentDescription = null,
+                        tint = Color(0xFFFF9F0A),
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "安全提示",
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = Color(0xFFFF9F0A)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "系统会确保照片已成功复制到图集后，才会提供删除原图的选项，避免照片丢失。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = textColor.copy(alpha = 0.8f)
+                        )
+                    }
+                }
+            }
+
+            // 底部留出导航栏空间，实现沉浸式效果
+            Spacer(modifier = Modifier.height(28.dp).navigationBarsPadding())
+        }
+    }
 }
 
 // ========== 辅助组件 ==========

@@ -19,15 +19,24 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -52,6 +61,7 @@ import androidx.core.content.ContextCompat
 import com.tabula.v3.data.model.ImageFile
 import com.tabula.v3.data.preferences.AppPreferences
 import com.tabula.v3.data.preferences.CardStyleMode
+import com.tabula.v3.data.preferences.SourceImageDeletionStrategy
 import com.tabula.v3.data.preferences.SwipeStyle
 import com.tabula.v3.data.preferences.TagSelectionMode
 import com.tabula.v3.data.preferences.ThemeMode
@@ -213,14 +223,25 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkPermission() {
-        hasPermission = ContextCompat.checkSelfPermission(
-            this,
+        val permission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+ 使用细粒度媒体权限
             Manifest.permission.READ_MEDIA_IMAGES
-        ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            // Android 12 使用旧权限
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        hasPermission = ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestPermission() {
-        permissionLauncher.launch(Manifest.permission.READ_MEDIA_IMAGES)
+        val permission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+ 使用细粒度媒体权限
+            Manifest.permission.READ_MEDIA_IMAGES
+        } else {
+            // Android 12 使用旧权限
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        permissionLauncher.launch(permission)
     }
     
 }
@@ -311,6 +332,22 @@ fun TabulaApp(
     // ========== 推荐模式刷新触发器 ==========
     // 用于在设置中切换推荐模式后，返回主页时刷新批次
     var recommendModeRefreshKey by remember { mutableIntStateOf(0) }
+    
+    // ========== 原图删除提醒状态 ==========
+    var showSourceImageDeletionDialog by remember { mutableStateOf(false) }
+    var pendingSourceImageUris by remember { mutableStateOf<List<android.net.Uri>>(emptyList()) }
+    
+    // 监听图集模式切换，当切换到图集界面时检查是否需要提醒删除原图
+    LaunchedEffect(isAlbumMode, preferences.sourceImageDeletionStrategy) {
+        if (isAlbumMode && preferences.sourceImageDeletionStrategy == SourceImageDeletionStrategy.ASK_EVERY_TIME) {
+            // 获取所有待删除的原图
+            val cleanableResult = albumManager.getCleanableUrisForAllAlbums()
+            if (!cleanableResult.isEmpty && cleanableResult.sourceUris.isNotEmpty()) {
+                pendingSourceImageUris = cleanableResult.sourceUris
+                showSourceImageDeletionDialog = true
+            }
+        }
+    }
 
     // ========== 各页面的滚动状态（在 TabulaApp 级别保存，导航返回时保持位置） ==========
     val settingsScrollState = rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }
@@ -750,6 +787,7 @@ fun TabulaApp(
             onNavigateToImageDisplay = { currentScreen = AppScreen.IMAGE_DISPLAY },
             onNavigateToLab = { currentScreen = AppScreen.LAB },
             onNavigateToSupport = { currentScreen = AppScreen.SUPPORT },
+            onNavigateToAlbumTagSettings = { currentScreen = AppScreen.ALBUM_TAG_SETTINGS },
             scrollState = settingsScrollState
         )
     }
@@ -823,6 +861,25 @@ fun TabulaApp(
             onTagsPerRowChange = { count ->
                 tagsPerRow = count
                 preferences.tagsPerRow = count
+            },
+            onNavigateBack = { currentScreen = AppScreen.SETTINGS }
+        )
+    }
+    
+    // 图集标签设置页面
+    val albumTagSettingsContent: @Composable () -> Unit = {
+        val isDark = LocalIsDarkTheme.current
+        val context = LocalContext.current
+        com.tabula.v3.ui.screens.AlbumTagSettingsScreen(
+            backgroundColor = if (isDark) Color.Black else Color(0xFFF2F2F7),
+            cardColor = if (isDark) Color(0xFF1C1C1E) else Color.White,
+            textColor = if (isDark) Color.White else Color.Black,
+            secondaryTextColor = Color(0xFF8E8E93),
+            accentColor = TabulaColors.EyeGold,
+            sourceImageDeletionStrategy = preferences.sourceImageDeletionStrategy,
+            onSourceImageDeletionStrategyChange = { strategy ->
+                preferences.sourceImageDeletionStrategy = strategy
+                Toast.makeText(context, "设置已保存", Toast.LENGTH_SHORT).show()
             },
             onNavigateBack = { currentScreen = AppScreen.SETTINGS }
         )
@@ -1059,32 +1116,170 @@ fun TabulaApp(
         AppScreen.VIBRATION_SOUND -> settingsContent to vibrationSoundContent
         AppScreen.IMAGE_DISPLAY -> settingsContent to imageDisplayContent
         AppScreen.LAB -> settingsContent to labContent
+        AppScreen.ALBUM_TAG_SETTINGS -> settingsContent to albumTagSettingsContent
     }
     
     // ========== 渲染容器 ==========
     // 液态玻璃效果现在由 AGSL 着色器在各个组件内部处理
     // 不再需要全局的 Backdrop Provider
-    PredictiveBackContainer(
-        currentScreen = currentScreen,
-        onNavigateBack = {
-            currentScreen = when (currentScreen) {
-                AppScreen.ONBOARDING -> AppScreen.ONBOARDING  // 引导页不支持返回
-                AppScreen.PERSONALIZATION -> AppScreen.ONBOARDING  // 个性化返回到引导页
-                AppScreen.RECYCLE_BIN -> AppScreen.DECK
-                AppScreen.SETTINGS -> AppScreen.DECK
-                AppScreen.ABOUT -> AppScreen.SETTINGS
-                AppScreen.SUPPORT -> AppScreen.SETTINGS
-                AppScreen.STATISTICS -> AppScreen.SETTINGS
-                AppScreen.ALBUM_VIEW -> AppScreen.DECK
-                AppScreen.SYSTEM_ALBUM_VIEW -> AppScreen.DECK
-                AppScreen.VIBRATION_SOUND -> AppScreen.SETTINGS
-                AppScreen.IMAGE_DISPLAY -> AppScreen.SETTINGS
-                AppScreen.LAB -> AppScreen.SETTINGS
-                AppScreen.DECK -> AppScreen.DECK
+    Box(modifier = Modifier.fillMaxSize()) {
+        PredictiveBackContainer(
+            currentScreen = currentScreen,
+            onNavigateBack = {
+                currentScreen = when (currentScreen) {
+                    AppScreen.ONBOARDING -> AppScreen.ONBOARDING  // 引导页不支持返回
+                    AppScreen.PERSONALIZATION -> AppScreen.ONBOARDING  // 个性化返回到引导页
+                    AppScreen.RECYCLE_BIN -> AppScreen.DECK
+                    AppScreen.SETTINGS -> AppScreen.DECK
+                    AppScreen.ABOUT -> AppScreen.SETTINGS
+                    AppScreen.SUPPORT -> AppScreen.SETTINGS
+                    AppScreen.STATISTICS -> AppScreen.SETTINGS
+                    AppScreen.ALBUM_VIEW -> AppScreen.DECK
+                    AppScreen.SYSTEM_ALBUM_VIEW -> AppScreen.DECK
+                    AppScreen.VIBRATION_SOUND -> AppScreen.SETTINGS
+                    AppScreen.IMAGE_DISPLAY -> AppScreen.SETTINGS
+                    AppScreen.LAB -> AppScreen.SETTINGS
+                    AppScreen.ALBUM_TAG_SETTINGS -> AppScreen.SETTINGS
+                    AppScreen.DECK -> AppScreen.DECK
+                }
+            },
+            backgroundContent = backgroundContent,
+            foregroundContent = foregroundContent ?: {}
+        )
+        
+        // ========== 原图删除提醒对话框 ==========
+        if (showSourceImageDeletionDialog) {
+            SourceImageDeletionDialog(
+                imageCount = pendingSourceImageUris.size,
+                onConfirm = {
+                    showSourceImageDeletionDialog = false
+                    scope.launch {
+                        Toast.makeText(context, "正在删除 ${pendingSourceImageUris.size} 张原图...", Toast.LENGTH_SHORT).show()
+                        
+                        performDeleteUris(pendingSourceImageUris) { deletedUris ->
+                            if (deletedUris.isNotEmpty()) {
+                                scope.launch {
+                                    albumManager.clearDeletedUris(deletedUris)
+                                    allImages = allImages.filter { img -> 
+                                        !deletedUris.contains(img.uri.toString())
+                                    }
+                                }
+                                Toast.makeText(context, "已删除 ${deletedUris.size} 张原图", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "删除失败或已取消", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                },
+                onDismiss = {
+                    showSourceImageDeletionDialog = false
+                },
+                isDarkTheme = LocalIsDarkTheme.current
+            )
+        }
+    }
+}
+
+/**
+ * 原图删除提醒对话框
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun SourceImageDeletionDialog(
+    imageCount: Int,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    isDarkTheme: Boolean
+) {
+    val containerColor = if (isDarkTheme) Color(0xFF1C1C1E) else Color.White
+    val textColor = if (isDarkTheme) Color.White else Color.Black
+    val secondaryTextColor = if (isDarkTheme) Color(0xFFAEAEB2) else Color(0xFF3C3C43)
+    val accentColor = Color(0xFF007AFF)
+    val warningColor = Color(0xFFFF9F0A)
+    val context = LocalContext.current
+    
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = containerColor,
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Delete,
+                    contentDescription = null,
+                    tint = warningColor,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = "删除原位置的照片",
+                    color = textColor,
+                    fontWeight = FontWeight.Bold
+                )
             }
         },
-        backgroundContent = backgroundContent,
-        foregroundContent = foregroundContent ?: {}
+        text = {
+            Column {
+                Text(
+                    text = "检测到有 $imageCount 张照片已复制到图集，原位置的照片可以删除了。",
+                    color = textColor,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(warningColor.copy(alpha = 0.1f))
+                        .padding(12.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Info,
+                            contentDescription = null,
+                            tint = warningColor,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "已确认照片成功复制，删除是安全的。",
+                            color = textColor.copy(alpha = 0.8f),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(
+                onClick = {
+                    HapticFeedback.mediumTap(context)
+                    onConfirm()
+                }
+            ) {
+                Text(
+                    text = "删除原图",
+                    color = Color(0xFFFF3B30),  // 红色
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(
+                onClick = {
+                    HapticFeedback.lightTap(context)
+                    onDismiss()
+                }
+            ) {
+                Text(
+                    text = "稍后处理",
+                    color = secondaryTextColor
+                )
+            }
+        }
     )
 }
 

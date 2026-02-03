@@ -24,10 +24,10 @@ android {
 
     defaultConfig {
         applicationId = "com.tabula.v3"
-        minSdk = 34
+        minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = "3.3.0"
+        versionCode = 2
+        versionName = "3.3.1-beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

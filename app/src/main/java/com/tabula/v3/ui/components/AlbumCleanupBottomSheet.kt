@@ -20,8 +20,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -33,9 +35,13 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -62,7 +68,7 @@ import com.tabula.v3.ui.util.HapticFeedback
  * 用于选择要进行清理的图集，显示：
  * - 顶部"切换到全局整理"按钮
  * - 图集列表（封面、名称、数量、进度条、单选按钮）
- * - 已完成的图集默认隐藏
+ * - 已完成的图集会显示勾选标记，选择时弹窗提醒
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,7 +82,7 @@ fun AlbumCleanupBottomSheet(
     onSwitchToGlobal: () -> Unit,
     onDismiss: () -> Unit,
     onStartCleanup: () -> Unit,
-    showCompletedAlbums: Boolean = false
+    onResetAndStartCleanup: ((Album) -> Unit)? = null  // 重置并重新开始清理（用于已完成的图集）
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val context = LocalContext.current
@@ -87,15 +93,29 @@ fun AlbumCleanupBottomSheet(
     val secondaryTextColor = if (isDarkTheme) Color(0xFF8E8E93) else Color(0xFF8E8E93)
     val accentColor = Color(0xFF007AFF)
     
-    // 过滤图集（默认隐藏已完成的）
-    val displayAlbums = if (showCompletedAlbums) {
-        albums
-    } else {
-        albums.filter { album ->
-            val info = albumCleanupInfos.find { it.album.id == album.id }
-            info?.isCompleted != true
+    // 确认弹窗状态（用于已完成图集的重新整理提醒）
+    var showResetConfirmDialog by remember { mutableStateOf(false) }
+    var pendingResetAlbum by remember { mutableStateOf<Album?>(null) }
+    
+    // 显示所有图集（包括已完成的），已完成的会有特殊标记
+    // 排序规则：未完成的在前（按剩余组数降序），已完成的在后
+    val displayAlbums = albums.sortedWith(compareBy(
+        // 第一优先级：已完成的排在后面
+        { info -> 
+            val cleanupInfo = albumCleanupInfos.find { it.album.id == info.id }
+            cleanupInfo?.isCompleted == true
+        },
+        // 第二优先级：有进度的排在前面（剩余组数升序，即进度越多越靠前）
+        { info ->
+            val cleanupInfo = albumCleanupInfos.find { it.album.id == info.id }
+            // 未分析的排在有进度的后面（用 Int.MAX_VALUE）
+            if (cleanupInfo == null || cleanupInfo.totalGroups < 0) {
+                Int.MAX_VALUE
+            } else {
+                cleanupInfo.remainingGroups
+            }
         }
-    }
+    ))
     
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -219,10 +239,21 @@ fun AlbumCleanupBottomSheet(
             if (selectedAlbumId != null && displayAlbums.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(16.dp))
                 
+                // 检查选中的图集是否已完成
+                val selectedAlbum = albums.find { it.id == selectedAlbumId }
+                val selectedInfo = albumCleanupInfos.find { it.album.id == selectedAlbumId }
+                val isSelectedCompleted = selectedInfo?.isCompleted == true
+                
                 Button(
                     onClick = {
                         HapticFeedback.mediumTap(context)
-                        onStartCleanup()
+                        if (isSelectedCompleted && selectedAlbum != null) {
+                            // 已完成的图集，显示确认弹窗
+                            pendingResetAlbum = selectedAlbum
+                            showResetConfirmDialog = true
+                        } else {
+                            onStartCleanup()
+                        }
                     },
                     enabled = analyzingAlbumId == null,
                     colors = ButtonDefaults.buttonColors(
@@ -258,6 +289,60 @@ fun AlbumCleanupBottomSheet(
                 }
             }
         }
+    }
+    
+    // 重新整理确认弹窗
+    if (showResetConfirmDialog && pendingResetAlbum != null) {
+        AlertDialog(
+            onDismissRequest = {
+                showResetConfirmDialog = false
+                pendingResetAlbum = null
+            },
+            containerColor = containerColor,
+            title = {
+                Text(
+                    text = "重新整理",
+                    color = textColor,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "「${pendingResetAlbum?.name}」已经整理完毕。\n\n是否重新整理这个图集？",
+                    color = if (isDarkTheme) Color(0xFFAEAEB2) else Color(0xFF3C3C43)
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingResetAlbum?.let { album ->
+                            onResetAndStartCleanup?.invoke(album)
+                        }
+                        showResetConfirmDialog = false
+                        pendingResetAlbum = null
+                    }
+                ) {
+                    Text(
+                        text = "重新整理",
+                        color = accentColor,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showResetConfirmDialog = false
+                        pendingResetAlbum = null
+                    }
+                ) {
+                    Text(
+                        text = "取消",
+                        color = secondaryTextColor
+                    )
+                }
+            }
+        )
     }
 }
 
@@ -429,14 +514,25 @@ private fun AlbumCleanupItem(
         
         Spacer(modifier = Modifier.width(12.dp))
         
-        // 单选按钮
-        RadioButton(
-            selected = isSelected,
-            onClick = onClick,
-            colors = RadioButtonDefaults.colors(
-                selectedColor = accentColor,
-                unselectedColor = secondaryTextColor
+        // 右侧：已完成图标 或 单选按钮
+        if (info?.isCompleted == true) {
+            // 已完成的图集显示勾选图标
+            Icon(
+                imageVector = Icons.Filled.CheckCircle,
+                contentDescription = "已完成",
+                tint = Color(0xFF34C759),
+                modifier = Modifier.size(28.dp)
             )
-        )
+        } else {
+            // 未完成的显示单选按钮
+            RadioButton(
+                selected = isSelected,
+                onClick = onClick,
+                colors = RadioButtonDefaults.colors(
+                    selectedColor = accentColor,
+                    unselectedColor = secondaryTextColor
+                )
+            )
+        }
     }
 }

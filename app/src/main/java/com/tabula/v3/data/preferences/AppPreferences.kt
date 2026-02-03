@@ -269,6 +269,24 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_HAS_COMPLETED_ONBOARDING, false)
         set(value) = prefs.edit().putBoolean(KEY_HAS_COMPLETED_ONBOARDING, value).apply()
 
+    // ==================== 图集标签设置 ====================
+
+    /**
+     * 归档后原图删除策略
+     */
+    var sourceImageDeletionStrategy: SourceImageDeletionStrategy
+        get() {
+            val value = prefs.getString(KEY_SOURCE_IMAGE_DELETION_STRATEGY, SourceImageDeletionStrategy.MANUAL_IN_ALBUMS.name)
+            return try {
+                SourceImageDeletionStrategy.valueOf(value ?: SourceImageDeletionStrategy.MANUAL_IN_ALBUMS.name)
+            } catch (e: Exception) {
+                SourceImageDeletionStrategy.MANUAL_IN_ALBUMS
+            }
+        }
+        set(value) {
+            prefs.edit().putString(KEY_SOURCE_IMAGE_DELETION_STRATEGY, value.name).apply()
+        }
+
     // ==================== 快捷操作按钮设置 ====================
 
     /**
@@ -860,6 +878,9 @@ class AppPreferences(context: Context) {
         private const val KEY_TAG_SELECTION_MODE = "tag_selection_mode"
         private const val KEY_TAG_SWITCH_SPEED = "tag_switch_speed"
         private const val KEY_TAGS_PER_ROW = "tags_per_row"
+        
+        // 图集标签设置相关
+        private const val KEY_SOURCE_IMAGE_DELETION_STRATEGY = "source_image_deletion_strategy"
 
         private const val PICK_TIMESTAMPS_PREFS_NAME = "tabula_pick_timestamps"
         private const val SIMILAR_GROUPS_PREFS_NAME = "tabula_similar_groups"
@@ -945,7 +966,8 @@ enum class SwipeStyle {
  */
 enum class TagSelectionMode {
     SWIPE_AUTO,    // 下滑自动选择 - 下滑时标签自动切换，松手归类
-    FIXED_TAP      // 固定标签点击 - 标签固定显示，点击即归类
+    FIXED_TAP,     // 固定标签点击 - 标签固定显示，点击即归类
+    LIST_POPUP     // 弹层列表选择 - 下滑弹出图集列表，点击选择
 }
 
 /**
@@ -954,6 +976,14 @@ enum class TagSelectionMode {
 enum class AlbumCleanupDisplayMode {
     GROUPS,  // 显示组数：共 X 组 · 剩余 X 组
     PHOTOS   // 显示照片数：共 X 张 · 剩余 X 张
+}
+
+/**
+ * 归档后原图删除策略枚举
+ */
+enum class SourceImageDeletionStrategy {
+    MANUAL_IN_ALBUMS,  // 老办法：在图库界面手动删除原图
+    ASK_EVERY_TIME     // 每次提醒：切换到图库界面时询问是否删除原图
 }
 
 /**

@@ -437,8 +437,10 @@ private fun SwipeableImagePage(
         }
 
         // 高清图目标尺寸
+        // 注意：使用 constraints.maxWidth/maxHeight（像素值），而非 targetWidth.value（Dp 值）
+        // 否则初始加载的分辨率会不足，导致图片模糊，只有放大后才清晰
         val hdTargetSize = run {
-            val baseSize = maxOf(targetWidth.value, targetHeight.value)
+            val baseSize = maxOf(constraints.maxWidth, constraints.maxHeight).toFloat()
             val scaledSize = (baseSize * zoomScale).toInt()
             val imageDim = maxOf(image.actualWidth, image.actualHeight)
             val maxAllowed = if (imageDim > 0) imageDim.coerceAtMost(4096) else 4096

@@ -147,6 +147,9 @@ fun SwipeableCardStack(
     swipeStyle: SwipeStyle = SwipeStyle.SHUFFLE,
     // 是否启用下滑归类手势（固定标签点击模式下禁用）
     enableDownSwipeClassify: Boolean = true,
+    // 下滑触发弹层回调（LIST_POPUP 模式使用）
+    // 当 enableDownSwipeClassify = false 但此回调非空时，下滑会触发此回调
+    onDownSwipeTrigger: (() -> Unit)? = null,
     // 下滑归类相关参数
     albums: List<Album> = emptyList(),
     onClassifyToAlbum: ((ImageFile, Album) -> Unit)? = null,
@@ -186,6 +189,7 @@ fun SwipeableCardStack(
             cardAspectRatio = cardAspectRatio,
             isAdaptiveCardStyle = isAdaptiveCardStyle,
             enableDownSwipeClassify = enableDownSwipeClassify,
+            onDownSwipeTrigger = onDownSwipeTrigger,
             albums = albums,
             onClassifyToAlbum = onClassifyToAlbum,
             onCreateNewAlbum = onCreateNewAlbum,
@@ -869,6 +873,7 @@ fun SwipeableCardStack(
         contentAlignment = Alignment.Center
     ) {
         // ========== 底层卡片 (Prev) ==========
+        // 只有当有前一张图片时才显示，少量图片时不显示 Placeholder 避免视觉混乱
         if (prevImage != null && hasPrev) {
             key(prevImage.id) {
                 ImageCard(
@@ -889,7 +894,8 @@ fun SwipeableCardStack(
                     badges = rememberImageBadges(prevImage, showHdrBadges, showMotionBadges)
                 )
             }
-        } else {
+        } else if (images.size >= 3) {
+            // 只有当图片数量 >= 3 时才显示 Placeholder，营造堆叠效果
             ImageCardPlaceholder(
                 modifier = Modifier
                     .zIndex(0f)
@@ -908,6 +914,7 @@ fun SwipeableCardStack(
         }
 
         // ========== 中层卡片 (Next) ==========
+        // 只有当有下一张图片时才显示，少量图片时不显示 Placeholder
         if (nextImage != null && hasNext) {
             key(nextImage.id) {
                 ImageCard(
@@ -928,7 +935,8 @@ fun SwipeableCardStack(
                     badges = rememberImageBadges(nextImage, showHdrBadges, showMotionBadges)
                 )
             }
-        } else {
+        } else if (images.size >= 3) {
+            // 只有当图片数量 >= 3 时才显示 Placeholder
             ImageCardPlaceholder(
                 modifier = Modifier
                     .zIndex(1f)
@@ -1014,8 +1022,8 @@ fun SwipeableCardStack(
                                         // 判断滑动方向
                                         if (totalDy > totalDx * 1.5f && dragAmount.y < 0) {
                                             lockedDirection = SwipeDirection.UP
-                                        } else if (totalDy > totalDx * 1.5f && dragAmount.y > 0 && enableDownSwipeClassify) {
-                                            // 下滑归类（仅在启用时生效）
+                                        } else if (totalDy > totalDx * 1.5f && dragAmount.y > 0 && (enableDownSwipeClassify || onDownSwipeTrigger != null)) {
+                                            // 下滑归类（启用时生效）或下滑触发弹层（LIST_POPUP 模式）
                                             lockedDirection = SwipeDirection.DOWN
                                         } else if (totalDx > 20f || totalDy > 20f) {
                                             lockedDirection = SwipeDirection.HORIZONTAL
@@ -1057,6 +1065,28 @@ fun SwipeableCardStack(
                                                 val newY = (dragOffsetY.value + dragAmount.y).coerceAtLeast(0f)
                                                 dragOffsetY.snapTo(newY)
                                                 dragOffsetX.snapTo(dragOffsetX.value + dragAmount.x * 0.7f)
+                                                
+                                                // LIST_POPUP 模式：下滑触发弹层
+                                                if (onDownSwipeTrigger != null && !enableDownSwipeClassify) {
+                                                    // 达到阈值时触发弹层并重置卡片
+                                                    if (newY > classifyThresholdPx && !classifyThresholdHapticTriggered) {
+                                                        classifyThresholdHapticTriggered = true
+                                                        if (enableSwipeHaptics) {
+                                                            HapticFeedback.mediumTap(context)
+                                                        }
+                                                        // 触发弹层
+                                                        onDownSwipeTrigger.invoke()
+                                                        // 重置卡片位置（不重置 classifyThresholdHapticTriggered，避免持续触发振动）
+                                                        scope.launch {
+                                                            lockedDirection = SwipeDirection.NONE
+                                                            dragOffsetX.animateTo(0f, spring(stiffness = Spring.StiffnessMedium))
+                                                        }
+                                                        scope.launch {
+                                                            dragOffsetY.animateTo(0f, spring(stiffness = Spring.StiffnessMedium))
+                                                        }
+                                                    }
+                                                    return@launch
+                                                }
                                                 
                                                 // 尽早开始预加载（方向锁定后立即开始）
                                                 // 这样在用户达到归类阈值之前，bitmap 可能已经加载完成
@@ -1309,6 +1339,7 @@ private fun DrawModeCardStack(
     cardAspectRatio: Float = 3f / 4f,
     isAdaptiveCardStyle: Boolean = false,
     enableDownSwipeClassify: Boolean = true,
+    onDownSwipeTrigger: (() -> Unit)? = null,
     albums: List<Album> = emptyList(),
     onClassifyToAlbum: ((ImageFile, Album) -> Unit)? = null,
     onCreateNewAlbum: ((ImageFile) -> Unit)? = null,
@@ -2133,7 +2164,8 @@ private fun DrawModeCardStack(
                     badges = rememberImageBadges(leftCard, showHdrBadges, showMotionBadges)
                 )
             }
-        } else if (leftCard == null && !isDrawTransitioning && !isRecallTransitioning) {
+        } else if (leftCard == null && !isDrawTransitioning && !isRecallTransitioning && images.size >= 3) {
+            // 只有当图片数量 >= 3 时才显示 Placeholder，少量图片时不显示避免视觉混乱
             ImageCardPlaceholder(
                 modifier = Modifier
                     .zIndex(0.3f)  // 高于右卡(0f)，确保下一张在下下张上面
@@ -2252,7 +2284,8 @@ private fun DrawModeCardStack(
                     badges = rememberImageBadges(rightCard, showHdrBadges, showMotionBadges)
                 )
             }
-        } else if (rightCard == null && !isRecallTransitioning) {
+        } else if (rightCard == null && !isRecallTransitioning && images.size >= 3) {
+            // 只有当图片数量 >= 3 时才显示 Placeholder，少量图片时不显示避免视觉混乱
             ImageCardPlaceholder(
                 modifier = Modifier
                     .zIndex(0f)
@@ -2430,8 +2463,8 @@ private fun DrawModeCardStack(
                                         // 更早锁定方向，提高响应速度
                                         if (totalDy > totalDx * 1.3f && dragAmount.y < 0) {
                                             lockedDirection = SwipeDirection.UP
-                                        } else if (totalDy > totalDx * 1.3f && dragAmount.y > 0 && enableDownSwipeClassify) {
-                                            // 下滑归类（仅在启用时生效）
+                                        } else if (totalDy > totalDx * 1.3f && dragAmount.y > 0 && (enableDownSwipeClassify || onDownSwipeTrigger != null)) {
+                                            // 下滑归类（启用时生效）或下滑触发弹层（LIST_POPUP 模式）
                                             lockedDirection = SwipeDirection.DOWN
                                         } else if (totalDx > 12f || totalDy > 12f) {
                                             lockedDirection = SwipeDirection.HORIZONTAL
@@ -2462,6 +2495,28 @@ private fun DrawModeCardStack(
                                                 val newY = (centerDragOffsetY.value + dragAmount.y).coerceAtLeast(0f)
                                                 centerDragOffsetY.snapTo(newY)
                                                 centerDragOffsetX.snapTo(centerDragOffsetX.value + dragAmount.x * 0.7f)
+                                                
+                                                // LIST_POPUP 模式：下滑触发弹层
+                                                if (onDownSwipeTrigger != null && !enableDownSwipeClassify) {
+                                                    // 达到阈值时触发弹层并重置卡片
+                                                    if (newY > classifyThresholdPx && !classifyThresholdHapticTriggered) {
+                                                        classifyThresholdHapticTriggered = true
+                                                        if (enableSwipeHaptics) {
+                                                            HapticFeedback.mediumTap(context)
+                                                        }
+                                                        // 触发弹层
+                                                        onDownSwipeTrigger.invoke()
+                                                        // 重置卡片位置（不重置 classifyThresholdHapticTriggered，避免持续触发振动）
+                                                        scope.launch {
+                                                            lockedDirection = SwipeDirection.NONE
+                                                            centerDragOffsetX.animateTo(0f, spring(stiffness = Spring.StiffnessMedium))
+                                                        }
+                                                        scope.launch {
+                                                            centerDragOffsetY.animateTo(0f, spring(stiffness = Spring.StiffnessMedium))
+                                                        }
+                                                    }
+                                                    return@launch
+                                                }
                                                 
                                                 if (!isPreloading && preloadedBitmap == null) {
                                                     preloadBitmapForGenie()

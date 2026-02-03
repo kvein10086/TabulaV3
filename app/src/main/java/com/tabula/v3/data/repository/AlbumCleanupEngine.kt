@@ -158,9 +158,9 @@ class AlbumCleanupEngine(
         
         emit(0f)
         
-        if (images.size < 2) {
-            // 图片太少，无法形成相似组
-            android.util.Log.d(TAG, "Album ${album.name} has less than 2 images, skipping analysis")
+        if (images.isEmpty()) {
+            // 空图集，直接完成
+            android.util.Log.d(TAG, "Album ${album.name} is empty, skipping analysis")
             currentState = State.COMPLETED
             preferences.saveAlbumAnalysisResult(album.id, 0, emptyList())
             emit(1f)
@@ -174,27 +174,46 @@ class AlbumCleanupEngine(
         val hashMap = similarGroupDetector.ensureHashesComputed(images)
         emit(0.7f)
         
-        // 阶段2：检测相似组（占 30% 进度）
-        val groups = withContext(Dispatchers.Default) {
+        // 阶段2：检测相似组（占 25% 进度）
+        val similarGroups = withContext(Dispatchers.Default) {
             similarGroupDetector.detectSimilarGroups(images)
         }
+        emit(0.85f)
+        
+        // 阶段3：收集孤立图片（不在任何相似组中的图片）
+        // 图集清理的核心理念：每张照片都要过一遍，相似的凑在一起显示
+        val imagesInSimilarGroups = similarGroups.flatMap { it.images }.map { it.id }.toSet()
+        val orphanImages = images.filter { it.id !in imagesInSimilarGroups }
+        
+        // 为每张孤立图片创建单独的"组"
+        val orphanGroups = orphanImages.map { image ->
+            SimilarGroup(
+                images = listOf(image),
+                startTime = image.dateModified,
+                endTime = image.dateModified
+            )
+        }
+        
+        // 合并相似组和孤立组
+        // 排序策略：相似组优先（按大小降序），孤立组按时间排序放后面
+        val allGroups = similarGroups + orphanGroups.sortedBy { it.startTime }
         emit(0.9f)
         
         // 保存分析结果
-        val groupIds = groups.map { it.id }
-        preferences.saveAlbumAnalysisResult(album.id, groups.size, groupIds)
+        val groupIds = allGroups.map { it.id }
+        preferences.saveAlbumAnalysisResult(album.id, allGroups.size, groupIds)
         
         // 保存每组照片数量和总照片数
-        val groupImageCounts = groups.associate { it.id to it.size }
+        val groupImageCounts = allGroups.associate { it.id to it.size }
         preferences.saveGroupImageCounts(album.id, groupImageCounts)
-        val totalImages = groups.sumOf { it.size }
+        val totalImages = allGroups.sumOf { it.size }
         preferences.saveAlbumTotalImages(album.id, totalImages)
         
-        cachedGroups = groups
+        cachedGroups = allGroups
         
-        android.util.Log.d(TAG, "Analysis complete: found ${groups.size} similar groups, $totalImages total images")
+        android.util.Log.d(TAG, "Analysis complete: ${similarGroups.size} similar groups + ${orphanGroups.size} orphan images = ${allGroups.size} total groups, $totalImages total images")
         
-        currentState = if (groups.isEmpty()) State.COMPLETED else State.READY
+        currentState = if (allGroups.isEmpty()) State.COMPLETED else State.READY
         emit(1f)
     }
     

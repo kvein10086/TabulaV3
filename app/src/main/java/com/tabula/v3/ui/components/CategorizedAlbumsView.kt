@@ -97,6 +97,15 @@ fun CategorizedAlbumsView(
     
     // 拖拽状态：拖拽时禁用 LazyColumn 滚动
     var isDraggingAlbum by remember { mutableStateOf(false) }
+    
+    // ========== 分阶段渲染优化 ==========
+    // 首次渲染时使用简化版网格（无拖拽），500ms 后升级为可拖拽版本
+    // 这样可以让界面"瞬间出现"，拖拽功能延迟加载不影响首屏体验
+    var enableDragging by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(500)
+        enableDragging = true
+    }
 
     LazyColumn(
         state = listState,
@@ -158,22 +167,38 @@ fun CategorizedAlbumsView(
                     }
                 }
             } else if (hideHeaders) {
-                // 简化后使用 3 列网格布局，支持拖拽排序
+                // 简化后使用 3 列网格布局
+                // 分阶段渲染：首次显示静态网格，500ms 后升级为可拖拽版本
                 item {
-                    DraggableAlbumsGridInternal(
-                        albums = appAlbums,
-                        allImages = allImages,
-                        imageMap = imageMap,
-                        onAlbumClick = onAppAlbumClick,
-                        onReorder = onReorderAlbums,
-                        onCreateAlbumClick = onCreateAlbumClick,
-                        onDraggingChange = { dragging -> isDraggingAlbum = dragging },
-                        textColor = textColor,
-                        secondaryTextColor = secondaryTextColor,
-                        isDarkTheme = isDarkTheme,
-                        lazyListState = listState,
-                        disableImageLoading = disableImageLoading
-                    )
+                    if (enableDragging) {
+                        // 阶段2：可拖拽版本（延迟加载）
+                        DraggableAlbumsGridInternal(
+                            albums = appAlbums,
+                            allImages = allImages,
+                            imageMap = imageMap,
+                            onAlbumClick = onAppAlbumClick,
+                            onReorder = onReorderAlbums,
+                            onCreateAlbumClick = onCreateAlbumClick,
+                            onDraggingChange = { dragging -> isDraggingAlbum = dragging },
+                            textColor = textColor,
+                            secondaryTextColor = secondaryTextColor,
+                            isDarkTheme = isDarkTheme,
+                            lazyListState = listState,
+                            disableImageLoading = disableImageLoading
+                        )
+                    } else {
+                        // 阶段1：简化版本（立即显示，无拖拽功能）
+                        SimpleAlbumsGridInternal(
+                            albums = appAlbums,
+                            imageMap = imageMap,
+                            onAlbumClick = onAppAlbumClick,
+                            onCreateAlbumClick = onCreateAlbumClick,
+                            textColor = textColor,
+                            secondaryTextColor = secondaryTextColor,
+                            isDarkTheme = isDarkTheme,
+                            disableImageLoading = disableImageLoading
+                        )
+                    }
                 }
             } else {
                 item {
@@ -1131,6 +1156,85 @@ private fun DraggableAlbumsGridInternal(
                                 )
                             }
                             }  // 关闭 key 块
+                        } else {
+                            // 填充空位
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 简化版相册网格（无拖拽功能）
+ * 
+ * 用于分阶段渲染优化：首次显示时使用此组件，让界面瞬间出现。
+ * 500ms 后会自动升级为支持拖拽的 DraggableAlbumsGridInternal。
+ */
+@Composable
+private fun SimpleAlbumsGridInternal(
+    albums: List<Album>,
+    imageMap: Map<Long, ImageFile>,
+    onAlbumClick: (Album) -> Unit,
+    onCreateAlbumClick: (() -> Unit)?,
+    textColor: Color,
+    secondaryTextColor: Color,
+    isDarkTheme: Boolean,
+    disableImageLoading: Boolean = false
+) {
+    val context = LocalContext.current
+    val columnsPerRow = 3
+    
+    // 构建显示项目列表（新建按钮 + 图集）
+    val hasCreateButton = onCreateAlbumClick != null
+    val totalItems = if (hasCreateButton) albums.size + 1 else albums.size
+    val rowCount = (totalItems + columnsPerRow - 1) / columnsPerRow
+    
+    Column(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        for (rowIndex in 0 until rowCount) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                for (colIndex in 0 until columnsPerRow) {
+                    val itemIndex = rowIndex * columnsPerRow + colIndex
+                    
+                    val createClick = onCreateAlbumClick
+                    if (createClick != null && itemIndex == 0) {
+                        // 新建按钮（第一个位置）
+                        CreateAlbumCard(
+                            onClick = createClick,
+                            textColor = textColor,
+                            secondaryTextColor = secondaryTextColor,
+                            isDarkTheme = isDarkTheme,
+                            modifier = Modifier.weight(1f)
+                        )
+                    } else {
+                        // 图集卡片
+                        val albumIndex = if (hasCreateButton) itemIndex - 1 else itemIndex
+                        
+                        if (albumIndex in albums.indices) {
+                            val album = albums[albumIndex]
+                            val coverImage = album.coverImageId?.let { imageMap[it] }
+                            
+                            Box(modifier = Modifier.weight(1f)) {
+                                AppAlbumGridCard(
+                                    album = album,
+                                    coverImage = coverImage,
+                                    onClick = { onAlbumClick(album) },
+                                    textColor = textColor,
+                                    secondaryTextColor = secondaryTextColor,
+                                    isDarkTheme = isDarkTheme,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    disableImageLoading = disableImageLoading
+                                )
+                            }
                         } else {
                             // 填充空位
                             Spacer(modifier = Modifier.weight(1f))
