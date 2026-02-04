@@ -445,6 +445,29 @@ class AppPreferences(context: Context) {
         editor.apply()
     }
     
+    /**
+     * 从冷却池中移除指定的照片
+     * 用于切换推荐算法时，将未浏览的照片从冷却池中移除
+     * 
+     * 注意：使用 commit() 而非 apply() 以确保移除操作在返回前完成，
+     * 避免与后续的批次获取产生竞态条件。
+     * 
+     * @param imageIds 要移除的照片ID列表
+     */
+    fun removeImagesFromCooldown(imageIds: List<Long>) {
+        if (imageIds.isEmpty()) return
+        val editor = pickTimestampsPrefs.edit()
+        
+        imageIds.forEach { imageId ->
+            editor.remove("time_$imageId")
+            editor.remove("days_$imageId")
+        }
+        
+        // 使用 commit() 同步执行，确保移除完成后再返回
+        // 这样后续获取新批次时，这些照片不会被排除
+        editor.commit()
+    }
+    
     // ==================== 相似组冷却机制（独立于随机漫步模式）====================
     
     /**

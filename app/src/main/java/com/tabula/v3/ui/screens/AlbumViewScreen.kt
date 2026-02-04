@@ -45,8 +45,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.outlined.Block
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -123,7 +126,10 @@ fun AlbumViewScreen(
     onUpdateAlbum: (Album) -> Unit,
     onDeleteAlbum: (String) -> Unit,
     onHideAlbum: ((String) -> Unit)? = null,
+    onUnhideAlbum: ((String) -> Unit)? = null,
     onDeleteEmptyAlbum: ((String) -> Unit)? = null,
+    onExcludeFromRecommend: ((String, Boolean) -> Unit)? = null,  // 屏蔽/取消屏蔽图集
+    isAlbumExcludedFromRecommend: ((String) -> Boolean)? = null,   // 检查图集是否被屏蔽
     onNavigateBack: () -> Unit,
     initialAlbumId: String? = null,
     showHdrBadges: Boolean = false,
@@ -241,12 +247,20 @@ fun AlbumViewScreen(
                     )
                 },
                 onEditClick = { editingAlbum = currentAlbum },
-                onHideClick = onHideAlbum?.let { callback -> 
+                // 根据相册是否隐藏，显示隐藏或取消隐藏选项
+                onHideClick = if (!currentAlbum.isHidden) onHideAlbum?.let { callback -> 
                     { callback(currentAlbum.id); onNavigateBack() }
-                },
+                } else null,
+                onUnhideClick = if (currentAlbum.isHidden) onUnhideAlbum?.let { callback ->
+                    { callback(currentAlbum.id) }
+                } else null,
                 onDeleteEmptyClick = if (onDeleteEmptyAlbum != null && currentAlbum.imageCount == 0) {
                     { onDeleteEmptyAlbum(currentAlbum.id); onNavigateBack() }
                 } else null,
+                onExcludeFromRecommend = onExcludeFromRecommend?.let { callback ->
+                    { excluded: Boolean -> callback(currentAlbum.id, excluded) }
+                },
+                isExcludedFromRecommend = isAlbumExcludedFromRecommend?.invoke(currentAlbum.id) ?: false,
                 onSetCover = if (onUpdateAlbum != null) { imageId ->
                     val updatedAlbum = currentAlbum.copy(coverImageId = imageId)
                     onUpdateAlbum(updatedAlbum)
@@ -308,7 +322,10 @@ private fun AlbumContentView(
     onImageClick: (ImageFile, SourceRect) -> Unit,
     onEditClick: () -> Unit,
     onHideClick: (() -> Unit)? = null,
+    onUnhideClick: (() -> Unit)? = null,
     onDeleteEmptyClick: (() -> Unit)? = null,
+    onExcludeFromRecommend: ((Boolean) -> Unit)? = null,
+    isExcludedFromRecommend: Boolean = false,
     onSetCover: ((Long) -> Unit)? = null,
     onNavigateBack: () -> Unit,
     albums: List<Album> = emptyList(),
@@ -511,6 +528,42 @@ private fun AlbumContentView(
                                 modifier = Modifier.padding(horizontal = 4.dp)
                             )
                             
+                            // 屏蔽/取消屏蔽图集（从推荐中排除）
+                            if (onExcludeFromRecommend != null) {
+                                // 分隔线
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                                        .height(0.5.dp)
+                                        .background(secondaryTextColor.copy(alpha = 0.2f))
+                                )
+                                
+                                DropdownMenuItem(
+                                    text = { 
+                                        Text(
+                                            if (isExcludedFromRecommend) "取消屏蔽" else "屏蔽图集",
+                                            color = textColor,
+                                            fontWeight = FontWeight.Medium
+                                        ) 
+                                    },
+                                    onClick = {
+                                        showMenu = false
+                                        HapticFeedback.lightTap(context)
+                                        onExcludeFromRecommend(!isExcludedFromRecommend)
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            if (isExcludedFromRecommend) Icons.Outlined.CheckCircle else Icons.Outlined.Block, 
+                                            contentDescription = null,
+                                            tint = if (isExcludedFromRecommend) Color(0xFF34C759) else secondaryTextColor,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    },
+                                    modifier = Modifier.padding(horizontal = 4.dp)
+                                )
+                            }
+                            
                             // 隐藏相册（如果有回调）
                             if (onHideClick != null) {
                                 // 分隔线
@@ -539,6 +592,42 @@ private fun AlbumContentView(
                                             Icons.Outlined.VisibilityOff, 
                                             contentDescription = null,
                                             tint = secondaryTextColor,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    },
+                                    modifier = Modifier.padding(horizontal = 4.dp)
+                                )
+                            }
+                            
+                            // 取消隐藏相册（如果相册已隐藏）
+                            if (onUnhideClick != null) {
+                                // 分隔线
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                                        .height(0.5.dp)
+                                        .background(secondaryTextColor.copy(alpha = 0.2f))
+                                )
+                                
+                                DropdownMenuItem(
+                                    text = { 
+                                        Text(
+                                            "取消隐藏",
+                                            color = textColor,
+                                            fontWeight = FontWeight.Medium
+                                        ) 
+                                    },
+                                    onClick = {
+                                        showMenu = false
+                                        onUnhideClick()
+                                        HapticFeedback.lightTap(context)
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Outlined.Visibility, 
+                                            contentDescription = null,
+                                            tint = Color(0xFF34C759),  // 绿色表示恢复
                                             modifier = Modifier.size(20.dp)
                                         )
                                     },

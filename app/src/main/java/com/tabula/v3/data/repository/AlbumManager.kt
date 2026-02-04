@@ -117,7 +117,8 @@ class AlbumManager(private val context: Context) {
         val textColor: Long? = null,
         val order: Int = 0,
         val createdAt: Long = System.currentTimeMillis(),
-        val isHidden: Boolean = false  // 是否隐藏此图集
+        val isHidden: Boolean = false,  // 是否隐藏此图集
+        val isExcludedFromRecommend: Boolean = false  // 是否从推荐中排除（屏蔽图集）
     )
 
     // ========== 系统相册同步管理器 ==========
@@ -128,6 +129,12 @@ class AlbumManager(private val context: Context) {
     
     private val imageRepository: LocalImageRepository by lazy {
         LocalImageRepository(context)
+    }
+    
+    // ========== 智能排序：使用频率追踪 ==========
+    
+    private val usageTracker: AlbumUsageTracker by lazy {
+        AlbumUsageTracker.getInstance(context)
     }
 
     // ========== 相册 CRUD ==========
@@ -256,6 +263,63 @@ class AlbumManager(private val context: Context) {
         }
     }
 
+    // ========== 屏蔽图集（从推荐中排除） ==========
+
+    /**
+     * 设置图集是否从推荐中排除
+     * 
+     * 被屏蔽的图集中的照片不会出现在推荐流中。
+     * 适用于用户已经整理好、不希望再次推荐的图集。
+     * 
+     * @param albumId 图集ID（bucket 名称）
+     * @param excluded true 表示屏蔽，false 表示取消屏蔽
+     */
+    suspend fun setAlbumExcludedFromRecommend(albumId: String, excluded: Boolean) = withContext(Dispatchers.IO) {
+        val currentMetadata = loadMetadata().toMutableMap()
+        val existing = currentMetadata[albumId]
+        if (existing != null) {
+            currentMetadata[albumId] = existing.copy(isExcludedFromRecommend = excluded)
+        } else {
+            // 创建新的元数据
+            currentMetadata[albumId] = AlbumMetadata(name = albumId, isExcludedFromRecommend = excluded)
+        }
+        saveMetadata(currentMetadata)
+        _metadata.value = currentMetadata
+        
+        Log.d(TAG, "Set album '$albumId' excludedFromRecommend=$excluded")
+    }
+
+    /**
+     * 检查图集是否被屏蔽（从推荐中排除）
+     * 
+     * @param albumId 图集ID（bucket 名称）
+     * @return true 如果被屏蔽
+     */
+    fun isAlbumExcludedFromRecommend(albumId: String): Boolean {
+        return _metadata.value[albumId]?.isExcludedFromRecommend ?: false
+    }
+
+    /**
+     * 获取所有被屏蔽的图集ID
+     * 
+     * @return 被屏蔽的图集ID集合
+     */
+    fun getExcludedAlbumIds(): Set<String> {
+        return _metadata.value
+            .filter { it.value.isExcludedFromRecommend }
+            .keys
+    }
+
+    /**
+     * 获取所有被屏蔽的图集列表
+     * 
+     * @return 被屏蔽的图集列表
+     */
+    fun getExcludedAlbums(): List<Album> {
+        val excludedIds = getExcludedAlbumIds()
+        return _albums.value.filter { it.id in excludedIds }
+    }
+
     /**
      * 删除空图集（删除系统文件夹，仅当图集内没有图片时允许）
      * 
@@ -307,6 +371,9 @@ class AlbumManager(private val context: Context) {
 
     /**
      * 重新排序相册
+     * 
+     * 当用户手动拖拽排序时调用。会设置手动排序锁定，
+     * 在锁定期内保持用户设定的顺序，不受智能排序影响。
      */
     suspend fun reorderAlbums(albumIds: List<String>) {
         // 1. 更新元数据中的排序
@@ -333,6 +400,10 @@ class AlbumManager(private val context: Context) {
             if (newOrder >= 0) album.copy(order = newOrder) else album
         }.sortedBy { it.order }
         _albums.value = sortedAlbums
+        
+        // 4. 设置手动排序锁定（尊重用户的主动排序意愿）
+        usageTracker.setManualOrderLock(albumIds)
+        Log.d(TAG, "Reordered ${albumIds.size} albums and set manual order lock")
     }
 
     // ========== 图片归类（直接操作系统相册） ==========
@@ -367,6 +438,9 @@ class AlbumManager(private val context: Context) {
             
             // 记录原图位置，用于后续清理
             addSourceImageRecord(albumId, imageUri)
+            
+            // 记录使用频率（用于智能排序）
+            usageTracker.recordUsage(albumId)
             
             // 刷新图集列表以更新图片数量
             refreshAlbumsFromSystem()
@@ -570,11 +644,42 @@ class AlbumManager(private val context: Context) {
                 }
             
             // 5. 合并两个来源的图集列表
-            val albums = (albumsFromSystem + emptyAlbumsFromMetadata)
-                .sortedWith(compareBy({ it.order }, { -it.imageCount }))  // 先按 order，再按图片数量
+            val allAlbums = albumsFromSystem + emptyAlbumsFromMetadata
+            
+            // 6. 智能排序：优先使用频率得分，兼顾手动排序锁定
+            val usageScores = usageTracker.getAlbumScores()
+            val hasManualLock = usageTracker.hasAnyManualOrderLock()
+            
+            val albums = if (hasManualLock) {
+                // 有手动排序锁定：优先按锁定状态排序，然后按 order
+                allAlbums.sortedWith(compareBy(
+                    { album -> 
+                        // 锁定中的图集排在前面（锁定值越大越靠前）
+                        val score = usageScores[album.id]
+                        if (score == null || score < Double.MAX_VALUE / 2) {
+                            // 未锁定或普通得分，使用负数让其排在后面
+                            -(score ?: 0.0)
+                        } else {
+                            // 锁定中，使用极大负数让其排在最前面（值越大越靠前）
+                            -score
+                        }
+                    },
+                    { it.order },
+                    { -it.imageCount }
+                ))
+            } else if (usageScores.isNotEmpty()) {
+                // 无手动锁定，有使用记录：按使用频率得分排序
+                allAlbums.sortedWith(compareByDescending<Album> { album ->
+                    // 使用得分，未使用过的图集给予基础分
+                    usageScores[album.id] ?: AlbumUsageTracker.NEW_ALBUM_BASE_SCORE
+                }.thenBy { it.order }.thenByDescending { it.imageCount })
+            } else {
+                // 无使用记录：按传统方式排序（order + 图片数量）
+                allAlbums.sortedWith(compareBy({ it.order }, { -it.imageCount }))
+            }
             
             _albums.value = albums
-            Log.d(TAG, "Refreshed ${albums.size} albums from system (${albumsFromSystem.size} with images, ${emptyAlbumsFromMetadata.size} empty)")
+            Log.d(TAG, "Refreshed ${albums.size} albums from system (${albumsFromSystem.size} with images, ${emptyAlbumsFromMetadata.size} empty), hasManualLock=$hasManualLock, usageScores=${usageScores.size}")
         } catch (e: Exception) {
             Log.e(TAG, "Error refreshing albums from system", e)
         }
@@ -586,6 +691,10 @@ class AlbumManager(private val context: Context) {
     suspend fun initialize() = withContext(Dispatchers.IO) {
         _metadata.value = loadMetadata()
         _sourceImages.value = loadSourceImages()
+        
+        // 初始化使用频率追踪器（用于智能排序）
+        usageTracker.initialize()
+        
         refreshAlbumsFromSystem()
         Log.d(TAG, "AlbumManager initialized with system album integration, sourceImages=${_sourceImages.value.size} albums")
     }
@@ -605,8 +714,47 @@ class AlbumManager(private val context: Context) {
     
     /**
      * 记录原图位置（归类时调用）
+     * 
+     * 注意：如果图片已经在 Tabula 图集路径下（Pictures/Tabula/），则不记录。
+     * 这是为了防止用户将已归类的照片再次归类到同一/其他图集时，
+     * 导致清理功能误删图集内的照片。
      */
     private fun addSourceImageRecord(albumId: String, sourceUri: String) {
+        // 检查是否是 Tabula 图集内的照片
+        // Tabula 图集的 URI 通常包含 Pictures/Tabula/ 路径
+        // 通过查询 MediaStore 获取图片的相对路径来判断
+        val uri = try {
+            Uri.parse(sourceUri)
+        } catch (e: Exception) {
+            Log.e(TAG, "Invalid source URI: $sourceUri", e)
+            return
+        }
+        
+        // 查询图片的相对路径
+        val relativePath = try {
+            context.contentResolver.query(
+                uri,
+                arrayOf(android.provider.MediaStore.Images.Media.RELATIVE_PATH),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val pathIndex = cursor.getColumnIndex(android.provider.MediaStore.Images.Media.RELATIVE_PATH)
+                    if (pathIndex >= 0) cursor.getString(pathIndex) else null
+                } else null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error querying relative path for $sourceUri", e)
+            null
+        }
+        
+        // 如果图片已经在 Tabula 图集路径下，不记录为待清理原图
+        if (relativePath?.startsWith("Pictures/Tabula/", ignoreCase = true) == true) {
+            Log.d(TAG, "Skipping source image record for '$albumId': image is already in Tabula album path ($relativePath)")
+            return
+        }
+        
         val current = _sourceImages.value.toMutableMap()
         val uris = current.getOrPut(albumId) { mutableSetOf() }
         uris.add(sourceUri)
@@ -726,7 +874,8 @@ class AlbumManager(private val context: Context) {
                     textColor = obj.optLong("textColor", -1).takeIf { it != -1L },
                     order = obj.optInt("order", Int.MAX_VALUE),
                     createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
-                    isHidden = obj.optBoolean("isHidden", false)
+                    isHidden = obj.optBoolean("isHidden", false),
+                    isExcludedFromRecommend = obj.optBoolean("isExcludedFromRecommend", false)
                 )
             }
 
@@ -748,6 +897,7 @@ class AlbumManager(private val context: Context) {
                     put("order", meta.order)
                     put("createdAt", meta.createdAt)
                     put("isHidden", meta.isHidden)
+                    put("isExcludedFromRecommend", meta.isExcludedFromRecommend)
                 }
                 jsonArray.put(obj)
             }
@@ -925,6 +1075,9 @@ class AlbumManager(private val context: Context) {
             
             // 记录原图位置，用于后续清理
             addSourceImageRecord(action.albumId, action.imageUri)
+            
+            // 记录使用频率（用于智能排序）
+            usageTracker.recordUsage(action.albumId)
             
             // 刷新图集列表以更新图片数量
             refreshAlbumsFromSystem()

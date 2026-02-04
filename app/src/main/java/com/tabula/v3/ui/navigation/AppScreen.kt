@@ -14,8 +14,8 @@ enum class AppScreen {
     STATISTICS,  // 综合统计
     ALBUM_VIEW,  // 相册视图
     SYSTEM_ALBUM_VIEW, // 系统相册视图
-    VIBRATION_SOUND, // 振动与声音
-    IMAGE_DISPLAY,   // 图片显示设置
-    LAB,             // 实验室
-    ALBUM_TAG_SETTINGS // 图集标签设置
+    VIBRATION_SOUND,     // 振动与声音
+    DISPLAY_SETTINGS,    // 显示设置
+    LAB,                 // 实验室
+    REMINDER_SETTINGS    // 提醒设置
 }

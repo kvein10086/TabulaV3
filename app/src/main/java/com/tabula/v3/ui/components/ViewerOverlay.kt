@@ -131,6 +131,7 @@ fun ViewerOverlay(
     var isHdrComparePressed by remember { mutableStateOf(false) }
     var isLivePressed by remember { mutableStateOf(false) }
     var isPressing by remember { mutableStateOf(false) }
+    var wasLongPressing by remember { mutableStateOf(false) }
     var pressStartedAt by remember { mutableLongStateOf(0L) }
     val pressDelayMs = 80L
     
@@ -174,20 +175,11 @@ fun ViewerOverlay(
     val animProgress = remember { Animatable(0f) }
     var isExiting by remember { mutableStateOf(false) }
 
-    // 用户缩放 + 拖拽（使用普通状态，保证即时响应）
-    var userScale by remember { mutableFloatStateOf(1f) }
-    var userOffset by remember { mutableStateOf(Offset.Zero) }
+    // 图片内容尺寸
     var contentSize by remember { mutableStateOf(Size.Zero) }
     
     // 跟踪最近的缩放/拖动时间，防止缩放结束后误触发单击退出
     var lastTransformTime by remember { mutableLongStateOf(0L) }
-    
-    // 当用户放大超过 1.5x 时，触发加载原图
-    LaunchedEffect(userScale) {
-        if (userScale > 1.5f && !shouldLoadUltraHd) {
-            shouldLoadUltraHd = true
-        }
-    }
 
     val minScale = 1f
     val maxScale = 8f
@@ -207,20 +199,54 @@ fun ViewerOverlay(
         )
     }
 
-    fun applyScaleAndOffset(newScale: Float, newOffset: Offset, size: Size) {
-        val clampedScale = newScale.coerceIn(minScale, maxScale)
-        if (size.width <= 0f || size.height <= 0f) {
-            userScale = clampedScale
-            userOffset = Offset.Zero
-            return
+    // 使用 Animatable 实现丝滑的缩放动画
+    val animatedUserScale = remember { Animatable(1f) }
+    val animatedUserOffsetX = remember { Animatable(0f) }
+    val animatedUserOffsetY = remember { Animatable(0f) }
+    
+    // 直接从 Animatable 获取当前值用于渲染，避免同步延迟
+    val animScale = animatedUserScale.value
+    val animOffsetX = animatedUserOffsetX.value
+    val animOffsetY = animatedUserOffsetY.value
+    
+    // 当用户放大超过 1.5x 时，触发加载原图
+    LaunchedEffect(animScale) {
+        if (animScale > 1.5f && !shouldLoadUltraHd) {
+            shouldLoadUltraHd = true
         }
-        if (clampedScale <= minScale) {
-            userScale = minScale
-            userOffset = Offset.Zero
-            return
+    }
+    
+    // 动画恢复到原比例
+    fun animateToOriginalScale() {
+        scope.launch {
+            launch {
+                animatedUserScale.animateTo(
+                    targetValue = minScale,
+                    animationSpec = spring(
+                        dampingRatio = 0.8f,
+                        stiffness = 400f
+                    )
+                )
+            }
+            launch {
+                animatedUserOffsetX.animateTo(
+                    targetValue = 0f,
+                    animationSpec = spring(
+                        dampingRatio = 0.8f,
+                        stiffness = 400f
+                    )
+                )
+            }
+            launch {
+                animatedUserOffsetY.animateTo(
+                    targetValue = 0f,
+                    animationSpec = spring(
+                        dampingRatio = 0.8f,
+                        stiffness = 400f
+                    )
+                )
+            }
         }
-        userScale = clampedScale
-        userOffset = clampOffset(newOffset, clampedScale, size)
     }
 
     // 入场动画 - 优化为更丝滑的参数
@@ -281,11 +307,12 @@ fun ViewerOverlay(
         if (isExiting) return
         isExiting = true
 
-        // 重置缩放和偏移
-        userScale = 1f
-        userOffset = Offset.Zero
-        
         scope.launch {
+            // 重置缩放和偏移（使用 snapTo 同步重置 Animatable）
+            animatedUserScale.snapTo(1f)
+            animatedUserOffsetX.snapTo(0f)
+            animatedUserOffsetY.snapTo(0f)
+            
             // 主收缩动画
             animProgress.animateTo(
                 targetValue = 0f,
@@ -319,12 +346,17 @@ fun ViewerOverlay(
     val currentWidthDp = with(density) { currentWidth.toDp() }
     val currentHeightDp = with(density) { currentHeight.toDp() }
 
-    LaunchedEffect(contentSize, userScale) {
+    // 当内容尺寸或缩放变化时，确保偏移在有效范围内
+    LaunchedEffect(contentSize, animScale) {
         if (contentSize.width <= 0f || contentSize.height <= 0f) return@LaunchedEffect
-        if (userScale <= minScale) {
-            userOffset = Offset.Zero
+        if (animScale <= minScale) {
+            animatedUserOffsetX.snapTo(0f)
+            animatedUserOffsetY.snapTo(0f)
         } else {
-            userOffset = clampOffset(userOffset, userScale, contentSize)
+            val currentOffset = Offset(animatedUserOffsetX.value, animatedUserOffsetY.value)
+            val clampedOffset = clampOffset(currentOffset, animScale, contentSize)
+            animatedUserOffsetX.snapTo(clampedOffset.x)
+            animatedUserOffsetY.snapTo(clampedOffset.y)
         }
     }
 
@@ -352,10 +384,11 @@ fun ViewerOverlay(
         Box(
             modifier = Modifier
                 .graphicsLayer {
-                    translationX = currentX + userOffset.x
-                    translationY = currentY + userOffset.y
-                    scaleX = userScale
-                    scaleY = userScale
+                    // 直接使用 Animatable 值，避免同步延迟
+                    translationX = currentX + animOffsetX
+                    translationY = currentY + animOffsetY
+                    scaleX = animScale
+                    scaleY = animScale
                     transformOrigin = TransformOrigin(0.5f, 0.5f)
                 }
                 .size(currentWidthDp, currentHeightDp)
@@ -370,58 +403,113 @@ fun ViewerOverlay(
                         lastTransformTime = SystemClock.uptimeMillis()
                         
                         val size = contentSize
-                        val oldScale = userScale
-                        val newScale = (userScale * zoom).coerceIn(minScale, maxScale)
+                        // 获取当前最新的 Animatable 值
+                        val currentAnimScale = animatedUserScale.value
+                        val currentAnimOffset = Offset(animatedUserOffsetX.value, animatedUserOffsetY.value)
+                        
+                        val newScale = (currentAnimScale * zoom).coerceIn(minScale, maxScale)
                         if (size.width <= 0f || size.height <= 0f) {
-                            userScale = newScale
-                            userOffset = Offset.Zero
+                            // 使用 snapTo 保证即时响应
+                            scope.launch {
+                                animatedUserScale.snapTo(newScale)
+                                animatedUserOffsetX.snapTo(0f)
+                                animatedUserOffsetY.snapTo(0f)
+                            }
                             return@detectTransformGestures
                         }
                         val center = Offset(size.width / 2f, size.height / 2f)
-                        val scaleChange = if (oldScale == 0f) 1f else newScale / oldScale
+                        val scaleChange = if (currentAnimScale == 0f) 1f else newScale / currentAnimScale
                         // 拖动倍率与缩放比例成正比，放大越多拖动越快
-                        val panMultiplier = oldScale.coerceIn(1f, maxScale)
+                        val panMultiplier = currentAnimScale.coerceIn(1f, maxScale)
                         val adjustedPan = Offset(pan.x * panMultiplier, pan.y * panMultiplier)
-                        val newOffset = (userOffset + adjustedPan) + (centroid - center) * (1 - scaleChange)
-                        applyScaleAndOffset(newScale, newOffset, size)
+                        val newOffset = (currentAnimOffset + adjustedPan) + (centroid - center) * (1 - scaleChange)
+                        val clampedOffset = clampOffset(newOffset, newScale, size)
+                        
+                        // 使用 snapTo 保证缩放手势即时响应
+                        scope.launch {
+                            animatedUserScale.snapTo(newScale)
+                            if (newScale <= minScale) {
+                                animatedUserOffsetX.snapTo(0f)
+                                animatedUserOffsetY.snapTo(0f)
+                            } else {
+                                animatedUserOffsetX.snapTo(clampedOffset.x)
+                                animatedUserOffsetY.snapTo(clampedOffset.y)
+                            }
+                        }
                     }
                 }
                 .pointerInput(isHdr, motionInfo) {
                     detectTapGestures(
                         onTap = {
-                            // 单击退出，但如果刚刚进行了缩放/拖动操作（300ms内），不触发退出
+                            // 长按后释放不触发单击
+                            if (wasLongPressing) {
+                                wasLongPressing = false
+                                return@detectTapGestures
+                            }
+                            // 防止缩放/拖动刚结束时误触发
                             val timeSinceTransform = SystemClock.uptimeMillis() - lastTransformTime
                             if (timeSinceTransform > 300) {
-                                exitViewer()
+                                // 使用动画的目标值判断，避免动画过程中的不确定性
+                                val targetScale = animatedUserScale.targetValue
+                                if (targetScale > 1.05f) {
+                                    // 放大状态：动画恢复原比例
+                                    animateToOriginalScale()
+                                } else {
+                                    // 原比例：退出大图
+                                    exitViewer()
+                                }
                             }
                         },
                         onDoubleTap = { tapOffset ->
-                            // 双击缩放
-                            val targetScale = if (userScale > 1.2f) minScale else doubleTapScale
+                            // 双击缩放（使用动画）
+                            val currentAnimScale = animatedUserScale.value
+                            val currentAnimOffset = Offset(animatedUserOffsetX.value, animatedUserOffsetY.value)
+                            val targetScale = if (currentAnimScale > 1.2f) minScale else doubleTapScale
                             val size = contentSize
                             if (size.width <= 0f || size.height <= 0f) {
-                                userScale = targetScale
-                                userOffset = Offset.Zero
+                                scope.launch {
+                                    animatedUserScale.animateTo(targetScale, spring(dampingRatio = 0.8f, stiffness = 400f))
+                                    animatedUserOffsetX.snapTo(0f)
+                                    animatedUserOffsetY.snapTo(0f)
+                                }
                                 return@detectTapGestures
                             }
-                            val center = Offset(size.width / 2f, size.height / 2f)
-                            val scaleChange = if (userScale == 0f) 1f else targetScale / userScale
-                            val newOffset = if (targetScale <= minScale) {
-                                Offset.Zero
+                            if (targetScale <= minScale) {
+                                // 恢复原比例
+                                animateToOriginalScale()
                             } else {
-                                (userOffset + (tapOffset - center) * (1 - scaleChange))
+                                // 放大到点击位置
+                                val center = Offset(size.width / 2f, size.height / 2f)
+                                val scaleChange = if (currentAnimScale == 0f) 1f else targetScale / currentAnimScale
+                                val newOffset = (currentAnimOffset + (tapOffset - center) * (1 - scaleChange))
+                                val clampedOffset = clampOffset(newOffset, targetScale, size)
+                                scope.launch {
+                                    launch {
+                                        animatedUserScale.animateTo(targetScale, spring(dampingRatio = 0.8f, stiffness = 400f))
+                                    }
+                                    launch {
+                                        animatedUserOffsetX.animateTo(clampedOffset.x, spring(dampingRatio = 0.8f, stiffness = 400f))
+                                    }
+                                    launch {
+                                        animatedUserOffsetY.animateTo(clampedOffset.y, spring(dampingRatio = 0.8f, stiffness = 400f))
+                                    }
+                                }
                             }
-                            applyScaleAndOffset(targetScale, newOffset, size)
                         },
                         onLongPress = {
                             // 长按用于 HDR 对比和 Live Photo 触发
                             pressStartedAt = SystemClock.uptimeMillis()
+                            wasLongPressing = true
                             isPressing = true
                         },
                         onPress = {
                             // 任何触摸开始时记录
                             pressStartedAt = SystemClock.uptimeMillis()
                             tryAwaitRelease()
+                            // 如果触发了长按功能，标记防止后续单击
+                            if (isHdrComparePressed || isLivePressed) {
+                                wasLongPressing = true
+                            }
                             // 释放时结束 HDR/Live 播放
                             isPressing = false
                         }
@@ -456,7 +544,7 @@ fun ViewerOverlay(
             val hdTargetSize = run {
                 val baseSize = maxOf(containerWidthPx, containerHeightPx)
                 // 根据缩放比例计算所需尺寸：baseSize * scale，确保放大时有足够分辨率
-                val scaledSize = (baseSize * userScale).toInt()
+                val scaledSize = (baseSize * animScale).toInt()
                 // 同时考虑图片原始尺寸作为上限（避免请求超过原图分辨率）
                 val imageDim = maxOf(image.actualWidth, image.actualHeight)
                 val maxAllowed = if (imageDim > 0) imageDim.coerceAtMost(4096) else 4096

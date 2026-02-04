@@ -19,6 +19,10 @@ import kotlinx.coroutines.withContext
  * 两种模式使用独立的冷却机制：
  * - 随机漫步：以单张照片为单位冷却
  * - 相似推荐：以相似组为单位冷却
+ * 
+ * 屏蔽图集功能：
+ * - 用户可标记某些图集为"已整理/屏蔽"，这些图集中的照片不会出现在推荐流中
+ * - 通过 AlbumManager.getExcludedAlbumIds() 获取被屏蔽的图集列表
  */
 class RecommendationEngine(
     private val context: Context
@@ -26,6 +30,7 @@ class RecommendationEngine(
     private val preferences = AppPreferences(context)
     private val hashCache = ImageHashCache.getInstance(context)
     private val similarGroupDetector = SimilarGroupDetector(context, hashCache)
+    private val albumManager = AlbumManager.getInstance(context)
     
     // 缓存检测到的相似组（避免重复检测）
     private var cachedSimilarGroups: List<SimilarGroup>? = null
@@ -47,18 +52,45 @@ class RecommendationEngine(
     ): List<ImageFile> = withContext(Dispatchers.IO) {
         if (allImages.isEmpty()) return@withContext emptyList()
         
+        // 过滤掉被屏蔽图集的照片
+        val filteredImages = filterExcludedAlbums(allImages)
+        if (filteredImages.isEmpty()) {
+            android.util.Log.d(TAG, "No images available after filtering excluded albums")
+            return@withContext emptyList()
+        }
+        
         when (preferences.recommendMode) {
             RecommendMode.RANDOM_WALK -> {
                 // 清理过期的抽取记录
                 preferences.cleanupExpiredPickRecords()
-                getRandomWalkBatch(allImages, batchSize)
+                getRandomWalkBatch(filteredImages, batchSize)
             }
             RecommendMode.SIMILAR -> {
                 // 清理过期的相似组记录
                 preferences.cleanupExpiredSimilarGroupRecords()
-                getSimilarBatch(allImages)
+                getSimilarBatch(filteredImages)
             }
         }
+    }
+    
+    /**
+     * 过滤掉被屏蔽图集的照片
+     * 
+     * @param allImages 所有照片
+     * @return 过滤后的照片列表（不包含被屏蔽图集中的照片）
+     */
+    private fun filterExcludedAlbums(allImages: List<ImageFile>): List<ImageFile> {
+        val excludedAlbumIds = albumManager.getExcludedAlbumIds()
+        if (excludedAlbumIds.isEmpty()) {
+            return allImages
+        }
+        
+        val filtered = allImages.filter { image ->
+            image.bucketDisplayName !in excludedAlbumIds
+        }
+        
+        android.util.Log.d(TAG, "Filtered ${allImages.size - filtered.size} images from ${excludedAlbumIds.size} excluded albums")
+        return filtered
     }
     
     /**
@@ -73,11 +105,15 @@ class RecommendationEngine(
         withContext(Dispatchers.IO) {
             if (allImages.isEmpty()) return@withContext null
             
+            // 过滤掉被屏蔽图集的照片
+            val filteredImages = filterExcludedAlbums(allImages)
+            if (filteredImages.isEmpty()) return@withContext null
+            
             // 清理过期记录
             preferences.cleanupExpiredSimilarGroupRecords()
             
             // 获取相似组（使用缓存）
-            val groups = getOrDetectSimilarGroups(allImages)
+            val groups = getOrDetectSimilarGroups(filteredImages)
             
             // 获取冷却中的组ID
             val cooldownGroupIds = preferences.getSimilarGroupCooldownIds()
@@ -108,6 +144,24 @@ class RecommendationEngine(
     fun invalidateSimilarGroupCache() {
         cachedSimilarGroups = null
         cacheTimestamp = 0L
+    }
+    
+    /**
+     * 从冷却池中移除指定的照片
+     * 
+     * 用于切换推荐算法时，将当前批次中未浏览的照片从冷却池中移除，
+     * 确保这些照片不会因为算法切换而被"浪费"进入冷却期。
+     * 
+     * 注意：此方法只影响随机漫步模式的单张照片冷却池。
+     * 相似推荐模式使用的是组冷却池（以组ID为单位），不受此方法影响。
+     * 这是预期的行为：
+     * - 从随机漫步切换走时：未浏览的单张照片被移除冷却，可被新算法重新推荐
+     * - 从相似推荐切换走时：当前组已部分浏览，保留在组冷却池中是合理的
+     * 
+     * @param imageIds 要移除的照片ID列表
+     */
+    fun removeFromCooldown(imageIds: List<Long>) {
+        preferences.removeImagesFromCooldown(imageIds)
     }
     
     /**

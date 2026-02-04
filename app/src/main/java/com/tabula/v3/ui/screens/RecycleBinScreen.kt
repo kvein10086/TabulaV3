@@ -15,6 +15,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -67,6 +69,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -634,8 +637,18 @@ private fun FullScreenViewer(
     // 当前页面的缩放状态 - 用于控制 Pager 滑动
     var currentPageZoom by remember { mutableFloatStateOf(1f) }
     
+    // 多指触摸状态 - 用于立即禁用 Pager 滑动，避免缩放回弹
+    var isMultiTouchActive by remember { mutableStateOf(false) }
+    
     // 当前显示的图片
     val currentIndex = pagerState.currentPage
+    
+    // 页面切换时重置状态，避免状态卡住
+    LaunchedEffect(currentIndex) {
+        // 切换到新页面时，重置多指触摸状态和缩放状态
+        isMultiTouchActive = false
+        currentPageZoom = 1f
+    }
     val displayImage = images.getOrNull(currentIndex)
 
     val activity = context.findActivity()
@@ -656,11 +669,11 @@ private fun FullScreenViewer(
             .background(Color.Black)
     ) {
         // 使用 HorizontalPager 实现左右滑动
-        // 当图片放大时禁用滑动，以便拖动图片
+        // 当图片放大或双指触摸时禁用滑动，避免缩放回弹
         HorizontalPager(
             state = pagerState,
             modifier = Modifier.fillMaxSize(),
-            userScrollEnabled = currentPageZoom <= 1.05f,
+            userScrollEnabled = !isMultiTouchActive && currentPageZoom <= 1.05f,
             key = { images.getOrNull(it)?.id ?: it }
         ) { pageIndex ->
             val pageImage = images.getOrNull(pageIndex)
@@ -679,6 +692,12 @@ private fun FullScreenViewer(
                         // 只更新当前页面的缩放状态
                         if (pageIndex == pagerState.currentPage) {
                             currentPageZoom = zoom
+                        }
+                    },
+                    onMultiTouchChanged = { isMultiTouch ->
+                        // 只更新当前页面的多指触摸状态
+                        if (pageIndex == pagerState.currentPage) {
+                            isMultiTouchActive = isMultiTouch
                         }
                     }
                 )
@@ -784,6 +803,14 @@ private fun FullScreenViewer(
 /**
  * 回收站图片页面 - HorizontalPager 中的单个页面
  * 包含缩放、拖动、HDR/Live Photo 功能
+ * 
+ * 手势功能：
+ * 1. 双指缩放：流畅丝滑，支持缩放到最大后再缩小回原比例
+ * 2. 单击：原比例时退出大图；放大时先动画恢复原比例，再次单击才退出
+ * 3. 双击：在原比例和放大之间切换
+ * 4. 长按：HDR对比/Live Photo播放，松手后不退出
+ * 5. 单指拖拽：放大后支持拖动查看
+ * 6. 左右滑动：原比例下支持切换上/下一张
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -797,21 +824,31 @@ private fun RecycleBinImagePage(
     onDismiss: () -> Unit,
     window: android.view.Window?,
     originalColorMode: Int,
-    onZoomChanged: (Float) -> Unit = {}
+    onZoomChanged: (Float) -> Unit = {},
+    onMultiTouchChanged: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     
-    // 每个页面独立的缩放状态
-    var zoomScale by remember { mutableFloatStateOf(1f) }
-    var zoomOffset by remember { mutableStateOf(Offset.Zero) }
+    // 使用 Animatable 实现丝滑的缩放和位移动画
+    val animatedScale = remember { androidx.compose.animation.core.Animatable(1f) }
+    val animatedOffsetX = remember { androidx.compose.animation.core.Animatable(0f) }
+    val animatedOffsetY = remember { androidx.compose.animation.core.Animatable(0f) }
+    
     var zoomSize by remember { mutableStateOf(Size.Zero) }
+    var lastTransformTime by remember { mutableLongStateOf(0L) }
+    
     val minScale = 1f
     val maxScale = 8f
     val doubleTapScale = 3f
     
+    // 当前缩放值（用于判断状态）
+    val currentScale = animatedScale.value
+    val currentOffset = Offset(animatedOffsetX.value, animatedOffsetY.value)
+    
     // 当缩放变化时通知父组件
-    LaunchedEffect(zoomScale) {
-        onZoomChanged(zoomScale)
+    LaunchedEffect(currentScale) {
+        onZoomChanged(currentScale)
     }
 
     fun clampOffset(
@@ -826,6 +863,39 @@ private fun RecycleBinImagePage(
             x = offset.x.coerceIn(-maxOffsetX, maxOffsetX),
             y = offset.y.coerceIn(-maxOffsetY, maxOffsetY)
         )
+    }
+    
+    // 动画恢复到原比例
+    fun animateToOriginalScale() {
+        scope.launch {
+            launch {
+                animatedScale.animateTo(
+                    targetValue = minScale,
+                    animationSpec = androidx.compose.animation.core.spring(
+                        dampingRatio = 0.8f,
+                        stiffness = 400f
+                    )
+                )
+            }
+            launch {
+                animatedOffsetX.animateTo(
+                    targetValue = 0f,
+                    animationSpec = androidx.compose.animation.core.spring(
+                        dampingRatio = 0.8f,
+                        stiffness = 400f
+                    )
+                )
+            }
+            launch {
+                animatedOffsetY.animateTo(
+                    targetValue = 0f,
+                    animationSpec = androidx.compose.animation.core.spring(
+                        dampingRatio = 0.8f,
+                        stiffness = 400f
+                    )
+                )
+            }
+        }
     }
 
     // HDR / Live Photo 功能
@@ -872,7 +942,86 @@ private fun RecycleBinImagePage(
     }
 
     BoxWithConstraints(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            // 双指缩放检测放在外层，让整个页面区域都能响应双指缩放
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    
+                    do {
+                        val event = awaitPointerEvent()
+                        val pressedPointers = event.changes.filter { it.pressed }
+                        
+                        // 只在双指或更多手指时处理缩放
+                        if (pressedPointers.size >= 2) {
+                            onMultiTouchChanged(true)
+                            
+                            val zoomChange = event.calculateZoom()
+                            val panChange = event.calculatePan()
+                            val centroid = event.calculateCentroid(useCurrent = false)
+                            
+                            if (zoomChange != 1f || panChange != Offset.Zero) {
+                                lastTransformTime = android.os.SystemClock.uptimeMillis()
+                                
+                                val size = zoomSize
+                                val currentAnimScale = animatedScale.value
+                                val currentAnimOffset = Offset(animatedOffsetX.value, animatedOffsetY.value)
+                                val newScale = (currentAnimScale * zoomChange).coerceIn(minScale, maxScale)
+                                
+                                if (size.width > 0f && size.height > 0f) {
+                                    val center = Offset(size.width / 2f, size.height / 2f)
+                                    val scaleRatio = if (currentAnimScale == 0f) 1f else newScale / currentAnimScale
+                                    val panMultiplier = currentAnimScale.coerceIn(1f, maxScale)
+                                    val adjustedPan = Offset(panChange.x * panMultiplier, panChange.y * panMultiplier)
+                                    val newOffset = (currentAnimOffset + adjustedPan) + (centroid - center) * (1 - scaleRatio)
+                                    val clampedOffset = clampOffset(newOffset, newScale, size)
+                                    
+                                    scope.launch {
+                                        animatedScale.snapTo(newScale)
+                                        if (newScale <= minScale) {
+                                            animatedOffsetX.snapTo(0f)
+                                            animatedOffsetY.snapTo(0f)
+                                        } else {
+                                            animatedOffsetX.snapTo(clampedOffset.x)
+                                            animatedOffsetY.snapTo(clampedOffset.y)
+                                        }
+                                    }
+                                } else {
+                                    scope.launch {
+                                        animatedScale.snapTo(newScale)
+                                    }
+                                }
+                            }
+                            
+                            event.changes.forEach { it.consume() }
+                        }
+                    } while (event.changes.any { it.pressed })
+                    
+                    onMultiTouchChanged(false)
+                }
+            }
+            // 放大状态下的单指拖动也放在外层
+            .pointerInput(currentScale > 1.01f) {
+                if (currentScale > 1.01f) {
+                    detectDragGestures { change, dragAmount ->
+                        change.consume()
+                        lastTransformTime = android.os.SystemClock.uptimeMillis()
+                        if (zoomSize.width > 0f && zoomSize.height > 0f) {
+                            val latestScale = animatedScale.value
+                            val latestOffset = Offset(animatedOffsetX.value, animatedOffsetY.value)
+                            val panMultiplier = latestScale.coerceIn(1f, maxScale)
+                            val adjustedPan = Offset(dragAmount.x * panMultiplier, dragAmount.y * panMultiplier)
+                            val newOffset = latestOffset + adjustedPan
+                            val clampedOffset = clampOffset(newOffset, latestScale, zoomSize)
+                            scope.launch {
+                                animatedOffsetX.snapTo(clampedOffset.x)
+                                animatedOffsetY.snapTo(clampedOffset.y)
+                            }
+                        }
+                    }
+                }
+            },
         contentAlignment = Alignment.Center
     ) {
         val aspectRatio = if (image.height > 0) {
@@ -894,47 +1043,33 @@ private fun RecycleBinImagePage(
                     zoomSize = Size(size.width.toFloat(), size.height.toFloat())
                 }
                 .graphicsLayer {
-                    scaleX = zoomScale
-                    scaleY = zoomScale
-                    translationX = zoomOffset.x
-                    translationY = zoomOffset.y
+                    scaleX = currentScale
+                    scaleY = currentScale
+                    translationX = currentOffset.x
+                    translationY = currentOffset.y
                     transformOrigin = TransformOrigin(0.5f, 0.5f)
                 }
-                // 双指缩放 - 使用自定义检测，只处理双指手势，不阻止 Pager 滑动
-                .pointerInput(Unit) {
-                    awaitEachGesture {
-                        awaitFirstDown(requireUnconsumed = false)
-                        do {
-                            val event = awaitPointerEvent()
-                            // 只在双指时处理缩放
-                            if (event.changes.size >= 2) {
-                                val zoomChange = event.calculateZoom()
-                                if (zoomChange != 1f) {
-                                    val newScale = (zoomScale * zoomChange).coerceIn(minScale, maxScale)
-                                    zoomScale = newScale
-                                    if (newScale <= minScale) {
-                                        zoomOffset = Offset.Zero
-                                    } else {
-                                        zoomOffset = clampOffset(zoomOffset, newScale, zoomSize)
-                                    }
-                                    event.changes.forEach { it.consume() }
-                                }
-                            }
-                            // 单指时不消费事件，让 Pager 可以接收滑动
-                        } while (event.changes.any { it.pressed })
-                    }
-                }
-                // 单击/双击/长按
-                .pointerInput(Unit) {
+                // 单击/双击/长按只在图片区域有效（黑色区域点击不会退出）
+                .pointerInput(isHdr, currentMotionInfo) {
                     detectTapGestures(
                         onTap = {
                             if (wasLongPressing) {
                                 wasLongPressing = false
                                 return@detectTapGestures
                             }
-                            if (zoomScale <= 1.2f) {
-                                onDismiss()
+                            val timeSinceTransform = android.os.SystemClock.uptimeMillis() - lastTransformTime
+                            if (timeSinceTransform > 300) {
+                                val targetScale = animatedScale.targetValue
+                                if (targetScale > 1.05f) {
+                                    animateToOriginalScale()
+                                } else {
+                                    onDismiss()
+                                }
                             }
+                        },
+                        onLongPress = {
+                            wasLongPressing = true
+                            isPressing = true
                         },
                         onPress = {
                             isPressing = true
@@ -945,43 +1080,49 @@ private fun RecycleBinImagePage(
                             isPressing = false
                         },
                         onDoubleTap = { tapOffset ->
-                            val targetScale = if (zoomScale > 1.2f) minScale else doubleTapScale
+                            val targetScale = if (currentScale > 1.2f) minScale else doubleTapScale
                             if (zoomSize.width <= 0f || zoomSize.height <= 0f) {
-                                zoomScale = targetScale
-                                zoomOffset = Offset.Zero
+                                scope.launch {
+                                    animatedScale.animateTo(
+                                        targetScale,
+                                        androidx.compose.animation.core.spring(dampingRatio = 0.8f, stiffness = 400f)
+                                    )
+                                    animatedOffsetX.snapTo(0f)
+                                    animatedOffsetY.snapTo(0f)
+                                }
                                 return@detectTapGestures
                             }
                             if (targetScale <= minScale) {
-                                zoomScale = minScale
-                                zoomOffset = Offset.Zero
+                                animateToOriginalScale()
                             } else {
                                 val center = Offset(zoomSize.width / 2f, zoomSize.height / 2f)
-                                val scaleChange = targetScale / zoomScale
-                                val newOffset = (zoomOffset + (tapOffset - center) * (1 - scaleChange))
-                                zoomScale = targetScale
-                                zoomOffset = clampOffset(newOffset, targetScale, zoomSize)
-                            }
-                        }
-                    )
-                }
-                // 单指拖动（只在放大时生效）
-                .then(
-                    if (zoomScale > minScale) {
-                        Modifier.pointerInput(zoomScale) {
-                            detectDragGestures { change, dragAmount ->
-                                change.consume()
-                                if (zoomSize.width > 0f && zoomSize.height > 0f) {
-                                    val panMultiplier = zoomScale.coerceIn(1f, maxScale)
-                                    val adjustedPan = Offset(dragAmount.x * panMultiplier, dragAmount.y * panMultiplier)
-                                    val newOffset = zoomOffset + adjustedPan
-                                    zoomOffset = clampOffset(newOffset, zoomScale, zoomSize)
+                                val scaleChange = targetScale / currentScale
+                                val newOffset = (currentOffset + (tapOffset - center) * (1 - scaleChange))
+                                val clampedOffset = clampOffset(newOffset, targetScale, zoomSize)
+                                scope.launch {
+                                    launch {
+                                        animatedScale.animateTo(
+                                            targetScale,
+                                            androidx.compose.animation.core.spring(dampingRatio = 0.8f, stiffness = 400f)
+                                        )
+                                    }
+                                    launch {
+                                        animatedOffsetX.animateTo(
+                                            clampedOffset.x,
+                                            androidx.compose.animation.core.spring(dampingRatio = 0.8f, stiffness = 400f)
+                                        )
+                                    }
+                                    launch {
+                                        animatedOffsetY.animateTo(
+                                            clampedOffset.y,
+                                            androidx.compose.animation.core.spring(dampingRatio = 0.8f, stiffness = 400f)
+                                        )
+                                    }
                                 }
                             }
                         }
-                    } else {
-                        Modifier
-                    }
-                ),
+                    )
+                },
             contentAlignment = Alignment.Center
         ) {
             AsyncImage(

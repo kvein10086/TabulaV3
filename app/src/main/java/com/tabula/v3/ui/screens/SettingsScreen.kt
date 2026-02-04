@@ -1,6 +1,7 @@
 package com.tabula.v3.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Analytics
+import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Collections
 import androidx.compose.material.icons.outlined.DarkMode
@@ -39,8 +42,11 @@ import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Movie
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Numbers
 import androidx.compose.material.icons.outlined.Shuffle
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.SwipeRight
 import androidx.compose.material.icons.outlined.TextFormat
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.Vibration
@@ -87,6 +93,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -144,10 +151,12 @@ fun SettingsScreen(
     fluidCloudEnabled: Boolean = false,
     onFluidCloudEnabledChange: (Boolean) -> Unit = {},
     onNavigateToVibrationSound: () -> Unit = {},
-    onNavigateToImageDisplay: () -> Unit = {},
+    onNavigateToDisplaySettings: () -> Unit = {},
     onNavigateToLab: () -> Unit = {},
     onNavigateToSupport: () -> Unit = {},
-    onNavigateToAlbumTagSettings: () -> Unit = {},
+    onNavigateToReminderSettings: () -> Unit = {},
+    excludedAlbumCount: Int = 0,  // 已屏蔽图集数量
+    onNavigateToExcludedAlbums: () -> Unit = {},  // 导航到已屏蔽图集管理
     scrollState: ScrollState? = null  // 外部传入的滚动状态，用于保持导航返回时的位置
 ) {
     val context = LocalContext.current
@@ -181,8 +190,6 @@ fun SettingsScreen(
     
     // 当前设置状态
     var currentTheme by remember { mutableStateOf(preferences.themeMode) }
-    var showDeleteConfirm by remember { mutableStateOf(preferences.showDeleteConfirm) }
-    var currentBatchSize by remember { mutableIntStateOf(preferences.batchSize) }
     var currentTopBarMode by remember { mutableStateOf(preferences.topBarDisplayMode) }
     var currentShowHdrBadges by remember { mutableStateOf(showHdrBadges) }
     var currentShowMotionBadges by remember { mutableStateOf(showMotionBadges) }
@@ -196,7 +203,6 @@ fun SettingsScreen(
 
     // 底栏状态
     var showThemeSheet by remember { mutableStateOf(false) }
-    var showBatchSizeSheet by remember { mutableStateOf(false) }
     var showTopBarModeSheet by remember { mutableStateOf(false) }
     var showRecommendModeSheet by remember { mutableStateOf(false) }
 
@@ -306,20 +312,20 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(28.dp))
 
-            // ========== 行为 ==========
+            // ========== 浏览体验 ==========
             SectionHeader("浏览体验", textColor)
             
             SettingsGroup(cardColor) {
                 SettingsItem(
-                    icon = Icons.Outlined.Numbers,
-                    iconTint = Color(0xFF30D158), // Green
-                    title = "每组数量",
-                    value = "$currentBatchSize 张",
+                    icon = Icons.Outlined.Widgets,
+                    iconTint = Color(0xFF0A84FF), // Blue
+                    title = "显示设置",
+                    value = "",
                     textColor = textColor,
                     secondaryTextColor = secondaryTextColor,
                     onClick = {
                         HapticFeedback.lightTap(context)
-                        showBatchSizeSheet = true
+                        onNavigateToDisplaySettings()
                     }
                 )
                 
@@ -341,35 +347,33 @@ fun SettingsScreen(
                     }
                 )
                 
-                // 冷却期设置已移除，改为自动随机分配
-                
                 Divider(isDarkTheme)
                 
-                SettingsSwitchItem(
-                    icon = Icons.Outlined.Delete,
-                    iconTint = Color(0xFFFF453A), // Red
-                    title = "删除前确认",
+                SettingsItem(
+                    icon = Icons.Outlined.Block,
+                    iconTint = Color(0xFFFF9500), // Orange-yellow
+                    title = "已屏蔽图集",
+                    value = if (excludedAlbumCount > 0) "$excludedAlbumCount 个" else "无",
                     textColor = textColor,
-                    checked = showDeleteConfirm,
-                    onCheckedChange = {
+                    secondaryTextColor = secondaryTextColor,
+                    onClick = {
                         HapticFeedback.lightTap(context)
-                        showDeleteConfirm = it
-                        preferences.showDeleteConfirm = it
+                        onNavigateToExcludedAlbums()
                     }
                 )
                 
                 Divider(isDarkTheme)
-
+                
                 SettingsItem(
-                    icon = Icons.Outlined.Image,
-                    iconTint = Color(0xFF0A84FF), // Blue
-                    title = "卡片显示",
+                    icon = Icons.Outlined.Notifications,
+                    iconTint = Color(0xFFFF9F0A), // Orange
+                    title = "提醒设置",
                     value = "",
                     textColor = textColor,
                     secondaryTextColor = secondaryTextColor,
                     onClick = {
                         HapticFeedback.lightTap(context)
-                        onNavigateToImageDisplay()
+                        onNavigateToReminderSettings()
                     }
                 )
 
@@ -385,21 +389,6 @@ fun SettingsScreen(
                     onClick = {
                         HapticFeedback.lightTap(context)
                         onNavigateToVibrationSound()
-                    }
-                )
-                
-                Divider(isDarkTheme)
-                
-                SettingsItem(
-                    icon = Icons.Outlined.Collections,
-                    iconTint = Color(0xFFFF9F0A), // Orange
-                    title = "图集标签设置",
-                    value = "",
-                    textColor = textColor,
-                    secondaryTextColor = secondaryTextColor,
-                    onClick = {
-                        HapticFeedback.lightTap(context)
-                        onNavigateToAlbumTagSettings()
                     }
                 )
             }
@@ -584,25 +573,6 @@ fun SettingsScreen(
             }
         }
 
-        // 每组数量选择
-        if (showBatchSizeSheet) {
-            CustomBottomSheet(
-                title = "每组显示数量",
-                onDismiss = { showBatchSizeSheet = false },
-                containerColor = cardColor,
-                textColor = textColor
-            ) {
-                listOf(5, 10, 15, 20, 30).forEach { size ->
-                    OptionItem("$size 张", currentBatchSize == size, accentColor, textColor) {
-                        currentBatchSize = size
-                        preferences.batchSize = size
-                        onBatchSizeChange(size)
-                        showBatchSizeSheet = false
-                    }
-                }
-            }
-        }
-
         // 顶部显示模式选择
         if (showTopBarModeSheet) {
             CustomBottomSheet(
@@ -692,6 +662,7 @@ fun VibrationSoundScreen(
             // navigationBarsPadding 移到滚动内容底部，实现沉浸式效果
     ) {
         val context = LocalContext.current
+        val isDarkTheme = LocalIsDarkTheme.current
         // 顶部栏
         Box(
             modifier = Modifier
@@ -733,74 +704,99 @@ fun VibrationSoundScreen(
         ) {
             Spacer(modifier = Modifier.height(12.dp))
 
+            // 声音区域
             SectionHeader("声音", textColor)
+            
             SettingsGroup(cardColor) {
-                SettingsSwitchItem(
-                    icon = Icons.Outlined.Movie,
-                    iconTint = Color(0xFF30D158),
-                    title = "Live 声音",
-                    textColor = textColor,
-                    checked = playMotionSound,
-                    onCheckedChange = onPlayMotionSoundChange,
-                    enabled = showMotionBadges
-                )
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Live 声音开关
+                    BeautifulSwitchItem(
+                        icon = Icons.Outlined.Movie,
+                        iconTint = Color(0xFF30D158),
+                        title = "Live 声音",
+                        subtitle = "播放动态照片时发出声音",
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor,
+                        checked = playMotionSound,
+                        onCheckedChange = onPlayMotionSoundChange,
+                        enabled = showMotionBadges
+                    )
 
-                Divider(LocalIsDarkTheme.current)
+                    Divider(isDarkTheme)
 
-                SettingsSliderItem(
-                    icon = Icons.Outlined.VolumeUp,
-                    iconTint = Color(0xFF64D2FF),
-                    title = "Live 音量",
-                    value = motionSoundVolume,
-                    textColor = textColor,
-                    secondaryTextColor = secondaryTextColor,
-                    enabled = showMotionBadges && playMotionSound,
-                    accentColor = accentColor,
-                    onValueChange = onMotionSoundVolumeChange
-                )
+                    // 音量滑块
+                    BeautifulSliderItem(
+                        icon = Icons.Outlined.VolumeUp,
+                        iconTint = Color(0xFF64D2FF),
+                        title = "Live 音量",
+                        value = motionSoundVolume,
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor,
+                        enabled = showMotionBadges && playMotionSound,
+                        accentColor = Color(0xFF64D2FF),
+                        onValueChange = onMotionSoundVolumeChange
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(28.dp))
 
+            // 振动区域
             SectionHeader("振动", textColor)
+            
             SettingsGroup(cardColor) {
-                SettingsSwitchItem(
-                    icon = Icons.Outlined.Vibration,
-                    iconTint = Color(0xFFFF9F0A),
-                    title = "启用振动",
-                    textColor = textColor,
-                    checked = hapticEnabled,
-                    onCheckedChange = onHapticEnabledChange
-                )
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // 启用振动开关
+                    BeautifulSwitchItem(
+                        icon = Icons.Outlined.Vibration,
+                        iconTint = Color(0xFFFF9F0A),
+                        title = "启用振动",
+                        subtitle = "触觉反馈让操作更有感觉",
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor,
+                        checked = hapticEnabled,
+                        onCheckedChange = onHapticEnabledChange
+                    )
 
-                Divider(LocalIsDarkTheme.current)
+                    Divider(isDarkTheme)
 
-                SettingsSliderItem(
-                    icon = Icons.Outlined.Vibration,
-                    iconTint = Color(0xFFFF9F0A),
-                    title = "振动强度",
-                    value = hapticStrength,
-                    textColor = textColor,
-                    secondaryTextColor = secondaryTextColor,
-                    enabled = hapticEnabled,
-                    accentColor = accentColor,
-                    onValueChange = onHapticStrengthChange,
-                    previewHaptics = true,
-                    previewStep = 1,
-                    onPreviewHaptic = { HapticFeedback.lightTap(context) }
-                )
+                    // 振动强度滑块
+                    BeautifulSliderItem(
+                        icon = Icons.Outlined.Speed,
+                        iconTint = Color(0xFFFF9F0A),
+                        title = "振动强度",
+                        value = hapticStrength,
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor,
+                        enabled = hapticEnabled,
+                        accentColor = Color(0xFFFF9F0A),
+                        onValueChange = onHapticStrengthChange,
+                        previewHaptics = true,
+                        previewStep = 5,
+                        onPreviewHaptic = { HapticFeedback.lightTap(context) }
+                    )
 
-                Divider(LocalIsDarkTheme.current)
+                    Divider(isDarkTheme)
 
-                SettingsSwitchItem(
-                    icon = Icons.Outlined.Vibration,
-                    iconTint = Color(0xFFFF9F0A),
-                    title = "滑动卡片振动",
-                    textColor = textColor,
-                    checked = swipeHapticsEnabled,
-                    onCheckedChange = onSwipeHapticsEnabledChange,
-                    enabled = hapticEnabled
-                )
+                    // 滑动卡片振动开关
+                    BeautifulSwitchItem(
+                        icon = Icons.Outlined.SwipeRight,
+                        iconTint = Color(0xFFFF6B35),
+                        title = "滑动卡片振动",
+                        subtitle = "滑动卡片时产生振动反馈",
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor,
+                        checked = swipeHapticsEnabled,
+                        onCheckedChange = onSwipeHapticsEnabledChange,
+                        enabled = hapticEnabled
+                    )
+                }
             }
 
             // 底部留出导航栏空间，实现沉浸式效果
@@ -809,12 +805,20 @@ fun VibrationSoundScreen(
     }
 }
 
+/**
+ * 显示设置页面 - 整合每组数量和卡片显示设置
+ */
 @Composable
-fun ImageDisplayScreen(
+fun DisplaySettingsScreen(
     backgroundColor: Color,
     cardColor: Color,
     textColor: Color,
     secondaryTextColor: Color,
+    accentColor: Color,
+    // 每组数量
+    batchSize: Int,
+    onBatchSizeChange: (Int) -> Unit,
+    // 卡片显示
     showHdrBadges: Boolean,
     showMotionBadges: Boolean,
     cardStyleMode: CardStyleMode,
@@ -823,13 +827,6 @@ fun ImageDisplayScreen(
     onShowMotionBadgesChange: (Boolean) -> Unit,
     onCardStyleModeChange: (CardStyleMode) -> Unit,
     onSwipeStyleChange: (SwipeStyle) -> Unit,
-    // 标签收纳设置
-    tagSelectionMode: TagSelectionMode = TagSelectionMode.SWIPE_AUTO,
-    tagSwitchSpeed: Float = 1.0f,
-    tagsPerRow: Int = AppPreferences.DEFAULT_TAGS_PER_ROW,
-    onTagSelectionModeChange: (TagSelectionMode) -> Unit = {},
-    onTagSwitchSpeedChange: (Float) -> Unit = {},
-    onTagsPerRowChange: (Int) -> Unit = {},
     // 快捷操作按钮
     quickActionEnabled: Boolean = false,
     onQuickActionEnabledChange: (Boolean) -> Unit = {},
@@ -838,14 +835,15 @@ fun ImageDisplayScreen(
 ) {
     val context = LocalContext.current
     val isDarkTheme = LocalIsDarkTheme.current
-    val isLiquidGlass = LocalLiquidGlassEnabled.current
+    
+    // 每组数量选择底栏
+    var showBatchSizeSheet by remember { mutableStateOf(false) }
     
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(backgroundColor)
             .statusBarsPadding()
-            // navigationBarsPadding 移到滚动内容底部，实现沉浸式效果
     ) {
         // 顶部栏
         Box(
@@ -868,7 +866,7 @@ fun ImageDisplayScreen(
                 )
             }
             Text(
-                text = "卡片显示",
+                text = "显示设置",
                 style = MaterialTheme.typography.titleLarge.copy(
                     fontWeight = FontWeight.Bold,
                     fontSize = 20.sp
@@ -888,7 +886,40 @@ fun ImageDisplayScreen(
         ) {
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 卡片样式选择
+            // ========== 每组数量 ==========
+            SectionHeader("每组数量", textColor)
+            SettingsGroup(cardColor) {
+                SettingsItem(
+                    icon = Icons.Outlined.Numbers,
+                    iconTint = Color(0xFF30D158), // Green
+                    title = "每组显示数量",
+                    value = "$batchSize 张",
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor,
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        showBatchSizeSheet = true
+                    }
+                )
+                
+                // 说明
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 12.dp)
+                ) {
+                    Text(
+                        text = "每次加载的照片数量，数量越多浏览越连贯，但加载时间可能更长",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor.copy(alpha = 0.7f)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // ========== 卡片样式 ==========
             SectionHeader("卡片样式", textColor)
             SettingsGroup(cardColor) {
                 CardStyleOptionItem(
@@ -920,7 +951,7 @@ fun ImageDisplayScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // 切换样式选择
+            // ========== 切换样式 ==========
             SectionHeader("切换样式", textColor)
             SettingsGroup(cardColor) {
                 CardStyleOptionItem(
@@ -952,6 +983,7 @@ fun ImageDisplayScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+            // ========== 标识显示 ==========
             SectionHeader("标识显示", textColor)
             SettingsGroup(cardColor) {
                 SettingsSwitchItem(
@@ -1030,6 +1062,23 @@ fun ImageDisplayScreen(
 
             // 底部留出导航栏空间，实现沉浸式效果
             Spacer(modifier = Modifier.height(28.dp).navigationBarsPadding())
+        }
+    }
+    
+    // 每组数量选择底栏
+    if (showBatchSizeSheet) {
+        CustomBottomSheet(
+            title = "每组显示数量",
+            onDismiss = { showBatchSizeSheet = false },
+            containerColor = cardColor,
+            textColor = textColor
+        ) {
+            listOf(5, 10, 15, 20, 30).forEach { size ->
+                OptionItem("$size 张", batchSize == size, accentColor, textColor) {
+                    onBatchSizeChange(size)
+                    showBatchSizeSheet = false
+                }
+            }
         }
     }
 }
@@ -1761,15 +1810,19 @@ private fun tryOpenWidgetPicker(context: android.content.Context, onSuccess: () 
 }
 
 /**
- * 图集标签设置页面
+ * 提醒设置页面 - 整合删除前确认和原图删除提醒
  */
 @Composable
-fun AlbumTagSettingsScreen(
+fun ReminderSettingsScreen(
     backgroundColor: Color,
     cardColor: Color,
     textColor: Color,
     secondaryTextColor: Color,
     accentColor: Color,
+    // 删除前确认
+    showDeleteConfirm: Boolean,
+    onShowDeleteConfirmChange: (Boolean) -> Unit,
+    // 原图删除提醒
     sourceImageDeletionStrategy: SourceImageDeletionStrategy,
     onSourceImageDeletionStrategyChange: (SourceImageDeletionStrategy) -> Unit,
     onNavigateBack: () -> Unit
@@ -1804,7 +1857,7 @@ fun AlbumTagSettingsScreen(
                 )
             }
             Text(
-                text = "图集标签设置",
+                text = "提醒设置",
                 style = MaterialTheme.typography.titleLarge.copy(
                     fontWeight = FontWeight.Bold,
                     fontSize = 20.sp
@@ -1824,23 +1877,45 @@ fun AlbumTagSettingsScreen(
         ) {
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 页面说明
-            Text(
-                text = "归档照片到图集后，可以选择如何处理原位置的照片。",
-                style = MaterialTheme.typography.bodySmall,
-                color = secondaryTextColor.copy(alpha = 0.7f),
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // 删除策略开关
-            SectionHeader("原图删除提醒", textColor)
+            // ========== 删除前确认 ==========
+            SectionHeader("删除确认", textColor)
             SettingsGroup(cardColor) {
                 SettingsSwitchItem(
                     icon = Icons.Outlined.Delete,
+                    iconTint = Color(0xFFFF453A), // Red
+                    title = "删除前确认",
+                    textColor = textColor,
+                    checked = showDeleteConfirm,
+                    onCheckedChange = {
+                        HapticFeedback.lightTap(context)
+                        onShowDeleteConfirmChange(it)
+                    }
+                )
+                
+                // 说明文字
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 12.dp)
+                ) {
+                    Text(
+                        text = "开启后，删除照片时会弹出确认对话框，防止误删",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor.copy(alpha = 0.7f)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // ========== 原图删除提醒 ==========
+            SectionHeader("归档提醒", textColor)
+            SettingsGroup(cardColor) {
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.Collections,
                     iconTint = Color(0xFFFF9F0A), // Orange
-                    title = "切换图库时提醒删除",
+                    title = "切换图库时提醒删除原图",
                     textColor = textColor,
                     checked = sourceImageDeletionStrategy == SourceImageDeletionStrategy.ASK_EVERY_TIME,
                     onCheckedChange = { enabled ->
@@ -1862,7 +1937,7 @@ fun AlbumTagSettingsScreen(
                         .padding(bottom = 12.dp)
                 ) {
                     Text(
-                        text = "开启后，当有待删除的原图时，切换到图库界面会弹出提醒询问是否批量删除。关闭则需要在图库界面手动点击删除按钮处理。",
+                        text = "归档照片到图集后，切换到图库界面时弹出提醒询问是否批量删除原图。关闭则需要手动处理。",
                         style = MaterialTheme.typography.bodySmall,
                         color = secondaryTextColor.copy(alpha = 0.7f)
                     )
@@ -2448,6 +2523,376 @@ fun Divider(isDarkTheme: Boolean) {
         isDarkTheme = isDarkTheme,
         startPadding = 52.dp  // 图标宽度 + 间距
     )
+}
+
+/**
+ * 美化的分区卡片 - 带图标头部
+ */
+@Composable
+private fun BeautifulSectionCard(
+    icon: ImageVector,
+    iconTint: Color,
+    title: String,
+    textColor: Color,
+    cardColor: Color,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val isLiquidGlass = LocalLiquidGlassEnabled.current
+    
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // 区域头部
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 4.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 图标背景
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(iconTint.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = title,
+                    tint = iconTint,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            
+            Spacer(modifier = Modifier.width(12.dp))
+            
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 17.sp,
+                    letterSpacing = 0.3.sp
+                ),
+                color = textColor
+            )
+        }
+        
+        // 卡片内容
+        if (isLiquidGlass) {
+            com.tabula.v3.ui.components.BackdropLiquidGlassSettings(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    content = content
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(cardColor)
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                content = content
+            )
+        }
+    }
+}
+
+/**
+ * 美化的开关项 - 带副标题和触觉反馈
+ */
+@Composable
+private fun BeautifulSwitchItem(
+    icon: ImageVector,
+    iconTint: Color,
+    title: String,
+    subtitle: String,
+    textColor: Color,
+    secondaryTextColor: Color,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true
+) {
+    val context = LocalContext.current
+    
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 图标
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(iconTint.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = title,
+                tint = iconTint.copy(alpha = if (enabled) 1f else 0.4f),
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        
+        Spacer(modifier = Modifier.width(14.dp))
+        
+        // 标题和副标题
+        Column(
+            modifier = Modifier.weight(1f)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 16.sp
+                ),
+                color = textColor.copy(alpha = if (enabled) 1f else 0.4f)
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = 12.sp
+                ),
+                color = secondaryTextColor.copy(alpha = if (enabled) 0.7f else 0.3f),
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+        
+        Spacer(modifier = Modifier.width(8.dp))
+        
+        // 开关 - 带触觉反馈
+        Switch(
+            checked = checked,
+            onCheckedChange = { newValue ->
+                HapticFeedback.lightTap(context)
+                onCheckedChange(newValue)
+            },
+            enabled = enabled,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = TabulaColors.EyeGold,
+                uncheckedThumbColor = Color.White,
+                uncheckedTrackColor = Color(0xFFE9E9EB)
+            ),
+            modifier = Modifier
+                .height(24.dp)
+                .scale(0.9f)
+        )
+    }
+}
+
+/**
+ * 美化的滑块项 - 带数值气泡
+ */
+@Composable
+private fun BeautifulSliderItem(
+    icon: ImageVector,
+    iconTint: Color,
+    title: String,
+    value: Int,
+    textColor: Color,
+    secondaryTextColor: Color,
+    enabled: Boolean,
+    accentColor: Color,
+    onValueChange: (Int) -> Unit,
+    previewHaptics: Boolean = false,
+    previewStep: Int = 5,
+    onPreviewHaptic: (() -> Unit)? = null
+) {
+    // 记录上一次触发振动的值，只在首次组合时初始化
+    var lastHapticValue by remember { mutableIntStateOf(value.coerceIn(0, 100)) }
+    val isDarkTheme = LocalIsDarkTheme.current
+    val inactiveTrackColor = if (isDarkTheme) Color(0xFF3A3A3C) else Color(0xFFE5E5EA)
+    
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // 标题行
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 图标
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(iconTint.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = title,
+                    tint = iconTint.copy(alpha = if (enabled) 1f else 0.4f),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            
+            Spacer(modifier = Modifier.width(14.dp))
+            
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 16.sp
+                ),
+                color = textColor.copy(alpha = if (enabled) 1f else 0.4f),
+                modifier = Modifier.weight(1f)
+            )
+            
+            // 数值显示气泡
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        if (enabled) accentColor.copy(alpha = 0.15f)
+                        else Color.Gray.copy(alpha = 0.1f)
+                    )
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "${value.coerceIn(0, 100)}%",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp
+                    ),
+                    color = if (enabled) accentColor else secondaryTextColor.copy(alpha = 0.4f)
+                )
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(14.dp))
+        
+        // 滑块
+        BeautifulStyledSlider(
+            value = value,
+            enabled = enabled,
+            activeColor = accentColor,
+            inactiveColor = inactiveTrackColor,
+            onValueChange = { newValue ->
+                val clampedValue = newValue.coerceIn(0, 100)
+                onValueChange(clampedValue)
+                if (previewHaptics && enabled && onPreviewHaptic != null) {
+                    if (kotlin.math.abs(clampedValue - lastHapticValue) >= previewStep) {
+                        lastHapticValue = clampedValue
+                        onPreviewHaptic()
+                    }
+                }
+            }
+        )
+    }
+}
+
+/**
+ * 美化的纯色滑块组件
+ */
+@Composable
+private fun BeautifulStyledSlider(
+    value: Int,
+    enabled: Boolean,
+    activeColor: Color,
+    inactiveColor: Color,
+    thumbColor: Color = Color.White,
+    onValueChange: (Int) -> Unit,
+    trackHeight: Dp = 8.dp,
+    thumbSize: Dp = 22.dp
+) {
+    val density = LocalDensity.current
+    val clampedValue = value.coerceIn(0, 100)
+    
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(maxOf(trackHeight, thumbSize))
+    ) {
+        val widthPx = with(density) { maxWidth.toPx() }
+        val thumbPx = with(density) { thumbSize.toPx() }
+        val trackHeightPx = with(density) { trackHeight.toPx() }
+        val trackStartX = thumbPx / 2f
+        val trackEndX = (widthPx - thumbPx / 2f).coerceAtLeast(trackStartX)
+        val trackWidth = (trackEndX - trackStartX).coerceAtLeast(0f)
+        val fraction = (clampedValue / 100f).coerceIn(0f, 1f)
+        val activeEndX = trackStartX + trackWidth * fraction
+
+        val effectiveInactive = if (enabled) inactiveColor else inactiveColor.copy(alpha = 0.4f)
+        val effectiveActive = if (enabled) activeColor else activeColor.copy(alpha = 0.4f)
+
+        fun updateFromX(x: Float) {
+            if (!enabled) return
+            val clampedX = x.coerceIn(trackStartX, trackEndX)
+            val newFraction = if (trackWidth <= 0f) 0f else (clampedX - trackStartX) / trackWidth
+            val newValue = (newFraction * 100f).roundToInt().coerceIn(0, 100)
+            onValueChange(newValue)
+        }
+
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(enabled, trackStartX, trackEndX, trackWidth) {
+                    if (!enabled) return@pointerInput
+                    detectTapGestures { offset -> updateFromX(offset.x) }
+                }
+                .pointerInput(enabled, trackStartX, trackEndX, trackWidth) {
+                    if (!enabled) return@pointerInput
+                    detectDragGestures { change, _ ->
+                        updateFromX(change.position.x)
+                        change.consume()
+                    }
+                }
+        ) {
+            val y = size.height / 2f
+            val top = y - trackHeightPx / 2f
+            val radius = trackHeightPx / 2f
+
+            // 绘制非活动轨道
+            drawRoundRect(
+                color = effectiveInactive,
+                topLeft = Offset(trackStartX, top),
+                size = Size(trackWidth, trackHeightPx),
+                cornerRadius = CornerRadius(radius, radius)
+            )
+
+            // 绘制活动轨道
+            if (activeEndX > trackStartX) {
+                drawRoundRect(
+                    color = effectiveActive,
+                    topLeft = Offset(trackStartX, top),
+                    size = Size(activeEndX - trackStartX, trackHeightPx),
+                    cornerRadius = CornerRadius(radius, radius)
+                )
+            }
+
+            // 绘制滑块 - 带阴影效果
+            val thumbRadius = thumbPx / 2f
+            val thumbCenter = Offset(activeEndX, y)
+            
+            // 滑块阴影
+            drawCircle(
+                color = Color.Black.copy(alpha = if (enabled) 0.15f else 0.08f),
+                radius = thumbRadius + 1.dp.toPx(),
+                center = thumbCenter.copy(y = thumbCenter.y + 1.dp.toPx())
+            )
+            
+            // 滑块本体
+            drawCircle(
+                color = thumbColor.copy(alpha = if (enabled) 1f else 0.6f),
+                radius = thumbRadius,
+                center = thumbCenter
+            )
+            
+            // 滑块边框
+            drawCircle(
+                color = if (enabled) effectiveActive else Color.Gray.copy(alpha = 0.3f),
+                radius = thumbRadius,
+                center = thumbCenter,
+                style = Stroke(width = 2.dp.toPx())
+            )
+        }
+    }
 }
 
 /**

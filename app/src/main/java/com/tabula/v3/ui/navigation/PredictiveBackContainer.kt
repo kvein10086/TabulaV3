@@ -82,7 +82,8 @@ fun PredictiveBackContainer(
             prev == AppScreen.DECK && currentScreen != AppScreen.DECK -> true
             prev == AppScreen.SETTINGS && currentScreen in listOf(
                 AppScreen.ABOUT, AppScreen.SUPPORT, AppScreen.STATISTICS,
-                AppScreen.VIBRATION_SOUND, AppScreen.IMAGE_DISPLAY, AppScreen.LAB
+                AppScreen.VIBRATION_SOUND, AppScreen.DISPLAY_SETTINGS, AppScreen.LAB,
+                AppScreen.REMINDER_SETTINGS
             ) -> true
             else -> false
         }

@@ -81,7 +81,8 @@ import com.tabula.v3.ui.screens.SettingsScreen
 import com.tabula.v3.ui.screens.SupportScreen
 import com.tabula.v3.ui.screens.VibrationSoundScreen
 import com.tabula.v3.ui.screens.LabScreen
-import com.tabula.v3.ui.screens.ImageDisplayScreen
+import com.tabula.v3.ui.screens.DisplaySettingsScreen
+import com.tabula.v3.ui.screens.ReminderSettingsScreen
 import com.tabula.v3.ui.screens.StatisticsScreen
 import com.tabula.v3.ui.screens.AlbumViewScreen
 import com.tabula.v3.ui.screens.SystemAlbumViewScreen
@@ -269,6 +270,7 @@ fun TabulaApp(
     // ========== 设置 ==========
     var currentBatchSize by remember { mutableIntStateOf(preferences.batchSize) }
     var currentTopBarMode by remember { mutableStateOf(preferences.topBarDisplayMode) }
+    var showDeleteConfirm by remember { mutableStateOf(preferences.showDeleteConfirm) }
     var showHdrBadges by remember { mutableStateOf(preferences.showHdrBadges) }
     var showMotionBadges by remember { mutableStateOf(preferences.showMotionBadges) }
     var cardStyleMode by remember { mutableStateOf(preferences.cardStyleMode) }
@@ -299,6 +301,9 @@ fun TabulaApp(
 
     // ========== 图片数据状态 ==========
     var allImages by remember { mutableStateOf<List<ImageFile>>(emptyList()) }
+    // 用于主界面卡片整理的图片列表（排除已归类到 Tabula 图集的照片）
+    // 这样已归类的照片不会再次出现在待整理列表中
+    var imagesForSorting by remember { mutableStateOf<List<ImageFile>>(emptyList()) }
     var deletedImages by remember { mutableStateOf<List<ImageFile>>(emptyList()) }
     var systemBuckets by remember { mutableStateOf<List<LocalImageRepository.SystemBucket>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -362,19 +367,24 @@ fun TabulaApp(
     LaunchedEffect(Unit) {
         val loadedData = withContext(Dispatchers.IO) {
             val repository = LocalImageRepository(context)
+            // allImages: 完整的图片列表（用于图集详情等需要完整数据的地方）
             val images = repository.getAllImages()
+            // imagesForSorting: 排除 Tabula 图集的图片列表（用于主界面卡片整理）
+            // 这样已归类到图集的照片不会再次出现在待整理列表中
+            val sortingImages = repository.getAllImagesExcludingTabulaAlbums()
             val buckets = repository.getAllBucketsWithInfo()
             val deleted = recycleBinManager.loadRecycleBin()
             albumManager.initialize()
-            Triple(images, buckets, deleted)
+            Pair(Pair(images, sortingImages), Pair(buckets, deleted))
         }
         // 在主线程更新状态
-        allImages = loadedData.first
-        systemBuckets = loadedData.second
-        deletedImages = loadedData.third
+        allImages = loadedData.first.first
+        imagesForSorting = loadedData.first.second
+        systemBuckets = loadedData.second.first
+        deletedImages = loadedData.second.second
         
         // 验证并修复图集封面（解决升级后封面显示异常的问题）
-        val validImageIds = loadedData.first.map { it.id }.toSet()
+        val validImageIds = loadedData.first.first.map { it.id }.toSet()
         albumManager.validateAndFixCoverImages(validImageIds)
         
         isLoading = false
@@ -510,7 +520,9 @@ fun TabulaApp(
 
     val deckContent: @Composable () -> Unit = {
         DeckScreen(
-            allImages = allImages,
+            // 使用 imagesForSorting（排除已归类到 Tabula 图集的照片）
+            // 这样已归类的照片不会再次出现在待整理列表中
+            allImages = imagesForSorting,
             batchSize = currentBatchSize,
             isLoading = isLoading,
             topBarDisplayMode = currentTopBarMode,
@@ -520,6 +532,9 @@ fun TabulaApp(
             onRemove = { image ->
                 val newImages = allImages.toMutableList().apply { remove(image) }
                 allImages = newImages
+                // 同时从待整理列表中移除
+                val newSortingImages = imagesForSorting.toMutableList().apply { remove(image) }
+                imagesForSorting = newSortingImages
                 deletedImages = deletedImages + image
                 
                 preferences.totalReviewedCount++
@@ -603,6 +618,12 @@ fun TabulaApp(
             getRecommendedBatch = { images, size ->
                 recommendationEngine.getRecommendedBatch(images, size)
             },
+            // 推荐模式刷新触发器（切换算法时刷新批次）
+            recommendModeRefreshKey = recommendModeRefreshKey,
+            // 从冷却池移除照片的回调（切换算法时移除未浏览的照片）
+            onRemoveFromCooldown = { imageIds ->
+                recommendationEngine.removeFromCooldown(imageIds)
+            },
             // 刷新按钮回调（系统相册集成后，不需要同步，只需刷新）
             onSyncClick = {
                 scope.launch {
@@ -612,13 +633,15 @@ fun TabulaApp(
                         val repository = LocalImageRepository(context)
                         val refreshedData = withContext(Dispatchers.IO) {
                             albumManager.refreshAlbumsFromSystem()
-                            Pair(
+                            Triple(
                                 repository.getAllBucketsWithInfo(),
-                                repository.getAllImages()
+                                repository.getAllImages(),
+                                repository.getAllImagesExcludingTabulaAlbums()
                             )
                         }
                         systemBuckets = refreshedData.first
                         allImages = refreshedData.second
+                        imagesForSorting = refreshedData.third
                         Toast.makeText(context, "刷新完成", Toast.LENGTH_SHORT).show()
                     } catch (e: Exception) {
                         Log.e("TabulaApp", "Refresh failed", e)
@@ -673,6 +696,15 @@ fun TabulaApp(
             onRestore = { image ->
                 deletedImages = deletedImages.toMutableList().apply { remove(image) }
                 allImages = allImages + image
+                // 恢复图片时也添加回待整理列表（如果不是 Tabula 图集内的照片）
+                // 简单起见，检查 bucketDisplayName 是否不在 albums 列表中
+                // 注意：这只是近似判断，更准确的需要查询 RELATIVE_PATH
+                val isInTabulaAlbum = albums.any { album -> 
+                    album.systemAlbumPath?.trimEnd('/')?.substringAfterLast('/') == image.bucketDisplayName 
+                }
+                if (!isInTabulaAlbum) {
+                    imagesForSorting = imagesForSorting + image
+                }
                 scope.launch {
                     recycleBinManager.removeFromRecycleBin(image)
                 }
@@ -775,10 +807,10 @@ fun TabulaApp(
                 preferences.fluidCloudEnabled = enabled
             },
             onNavigateToVibrationSound = { currentScreen = AppScreen.VIBRATION_SOUND },
-            onNavigateToImageDisplay = { currentScreen = AppScreen.IMAGE_DISPLAY },
+            onNavigateToDisplaySettings = { currentScreen = AppScreen.DISPLAY_SETTINGS },
             onNavigateToLab = { currentScreen = AppScreen.LAB },
             onNavigateToSupport = { currentScreen = AppScreen.SUPPORT },
-            onNavigateToAlbumTagSettings = { currentScreen = AppScreen.ALBUM_TAG_SETTINGS },
+            onNavigateToReminderSettings = { currentScreen = AppScreen.REMINDER_SETTINGS },
             scrollState = settingsScrollState
         )
     }
@@ -857,34 +889,46 @@ fun TabulaApp(
         )
     }
     
-    // 图集标签设置页面
-    val albumTagSettingsContent: @Composable () -> Unit = {
+    // 提醒设置页面
+    val reminderSettingsContent: @Composable () -> Unit = {
         val isDark = LocalIsDarkTheme.current
         val context = LocalContext.current
-        com.tabula.v3.ui.screens.AlbumTagSettingsScreen(
+        ReminderSettingsScreen(
             backgroundColor = if (isDark) Color.Black else Color(0xFFF2F2F7),
             cardColor = if (isDark) Color(0xFF1C1C1E) else Color.White,
             textColor = if (isDark) Color.White else Color.Black,
             secondaryTextColor = Color(0xFF8E8E93),
             accentColor = TabulaColors.EyeGold,
+            showDeleteConfirm = showDeleteConfirm,
+            onShowDeleteConfirmChange = { enabled ->
+                showDeleteConfirm = enabled
+                preferences.showDeleteConfirm = enabled
+            },
             sourceImageDeletionStrategy = sourceImageDeletionStrategy,
             onSourceImageDeletionStrategyChange = { strategy ->
                 sourceImageDeletionStrategy = strategy
                 preferences.sourceImageDeletionStrategy = strategy
-                val message = if (strategy == SourceImageDeletionStrategy.ASK_EVERY_TIME) "提醒已开启" else "提醒已关闭"
+                val message = if (strategy == SourceImageDeletionStrategy.ASK_EVERY_TIME) "归档提醒已开启" else "归档提醒已关闭"
                 Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             },
             onNavigateBack = { currentScreen = AppScreen.SETTINGS }
         )
     }
 
-    val imageDisplayContent: @Composable () -> Unit = {
+    // 显示设置页面
+    val displaySettingsContent: @Composable () -> Unit = {
         val isDark = LocalIsDarkTheme.current
-        ImageDisplayScreen(
+        DisplaySettingsScreen(
             backgroundColor = if (isDark) Color.Black else Color(0xFFF2F2F7),
             cardColor = if (isDark) Color(0xFF1C1C1E) else Color.White,
             textColor = if (isDark) Color.White else Color.Black,
             secondaryTextColor = Color(0xFF8E8E93),
+            accentColor = TabulaColors.EyeGold,
+            batchSize = currentBatchSize,
+            onBatchSizeChange = { size ->
+                currentBatchSize = size
+                preferences.batchSize = size
+            },
             showHdrBadges = showHdrBadges,
             showMotionBadges = showMotionBadges,
             cardStyleMode = cardStyleMode,
@@ -904,22 +948,6 @@ fun TabulaApp(
             onSwipeStyleChange = { style ->
                 swipeStyle = style
                 preferences.swipeStyle = style
-            },
-            // 标签收纳设置
-            tagSelectionMode = tagSelectionMode,
-            tagSwitchSpeed = tagSwitchSpeed,
-            tagsPerRow = tagsPerRow,
-            onTagSelectionModeChange = { mode ->
-                tagSelectionMode = mode
-                preferences.tagSelectionMode = mode
-            },
-            onTagSwitchSpeedChange = { speed ->
-                tagSwitchSpeed = speed
-                preferences.tagSwitchSpeed = speed
-            },
-            onTagsPerRowChange = { count ->
-                tagsPerRow = count
-                preferences.tagsPerRow = count
             },
             // 快捷操作按钮
             quickActionEnabled = quickActionEnabled,
@@ -949,17 +977,7 @@ fun TabulaApp(
     }
 
     val statisticsContent: @Composable () -> Unit = {
-        // 计算剩余整理数量：还没有被推荐刷到的图片
-        val cooldownIds = preferences.getCooldownImageIds()
-        val seenCount = allImages.count { it.id in cooldownIds }
-        val remainingToOrganize = allImages.size - seenCount
-        
         StatisticsScreen(
-            reviewedCount = preferences.totalReviewedCount.toInt(),
-            totalImages = allImages.size + preferences.totalReviewedCount.toInt(),
-            deletedCount = preferences.totalDeletedCount.toInt(),
-            markedCount = deletedImages.size,
-            remainingCount = remainingToOrganize,
             onBack = { currentScreen = AppScreen.SETTINGS }
         )
     }
@@ -985,6 +1003,12 @@ fun TabulaApp(
                     Toast.makeText(context, "相册已隐藏", Toast.LENGTH_SHORT).show()
                 }
             },
+            onUnhideAlbum = { albumId ->
+                scope.launch {
+                    albumManager.unhideAlbum(albumId)
+                    Toast.makeText(context, "相册已取消隐藏", Toast.LENGTH_SHORT).show()
+                }
+            },
             onDeleteEmptyAlbum = { albumId ->
                 scope.launch {
                     val success = albumManager.deleteEmptyAlbum(albumId)
@@ -994,6 +1018,16 @@ fun TabulaApp(
                         Toast.makeText(context, "删除失败", Toast.LENGTH_SHORT).show()
                     }
                 }
+            },
+            onExcludeFromRecommend = { albumId, excluded ->
+                scope.launch {
+                    albumManager.setAlbumExcludedFromRecommend(albumId, excluded)
+                    val message = if (excluded) "已屏蔽，不再推荐此图集的照片" else "已取消屏蔽"
+                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                }
+            },
+            isAlbumExcludedFromRecommend = { albumId ->
+                albumManager.isAlbumExcludedFromRecommend(albumId)
             },
             onNavigateBack = { currentScreen = AppScreen.DECK },
             initialAlbumId = selectedAlbumId,
@@ -1100,9 +1134,9 @@ fun TabulaApp(
         AppScreen.ALBUM_VIEW -> deckContent to albumViewContent
         AppScreen.SYSTEM_ALBUM_VIEW -> deckContent to systemAlbumViewContent
         AppScreen.VIBRATION_SOUND -> settingsContent to vibrationSoundContent
-        AppScreen.IMAGE_DISPLAY -> settingsContent to imageDisplayContent
+        AppScreen.DISPLAY_SETTINGS -> settingsContent to displaySettingsContent
         AppScreen.LAB -> settingsContent to labContent
-        AppScreen.ALBUM_TAG_SETTINGS -> settingsContent to albumTagSettingsContent
+        AppScreen.REMINDER_SETTINGS -> settingsContent to reminderSettingsContent
     }
     
     // ========== 渲染容器 ==========
@@ -1123,9 +1157,9 @@ fun TabulaApp(
                     AppScreen.ALBUM_VIEW -> AppScreen.DECK
                     AppScreen.SYSTEM_ALBUM_VIEW -> AppScreen.DECK
                     AppScreen.VIBRATION_SOUND -> AppScreen.SETTINGS
-                    AppScreen.IMAGE_DISPLAY -> AppScreen.SETTINGS
+                    AppScreen.DISPLAY_SETTINGS -> AppScreen.SETTINGS
                     AppScreen.LAB -> AppScreen.SETTINGS
-                    AppScreen.ALBUM_TAG_SETTINGS -> AppScreen.SETTINGS
+                    AppScreen.REMINDER_SETTINGS -> AppScreen.SETTINGS
                     AppScreen.DECK -> AppScreen.DECK
                 }
             },
@@ -1147,6 +1181,10 @@ fun TabulaApp(
                                 scope.launch {
                                     albumManager.clearDeletedUris(deletedUris)
                                     allImages = allImages.filter { img -> 
+                                        !deletedUris.contains(img.uri.toString())
+                                    }
+                                    // 同时从待整理列表中移除
+                                    imagesForSorting = imagesForSorting.filter { img ->
                                         !deletedUris.contains(img.uri.toString())
                                     }
                                 }
