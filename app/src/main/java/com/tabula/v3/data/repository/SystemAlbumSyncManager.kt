@@ -364,9 +364,12 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
     }
 
     /**
-     * 使用 MediaStore API 移动图片 (Android 10+)
+     * 使用 MediaStore API 移动图片
      * 
-     * 支持移动到现有系统相册（如 DCIM/Camera）或 Tabula 创建的相册。
+     * 优先通过更新 RELATIVE_PATH 实现真正的移动，这样可以保留：
+     * - 原始 _id（不会在"最近项目"中跳到最前）
+     * - 所有时间戳（DATE_TAKEN, DATE_ADDED, DATE_MODIFIED）
+     * - 所有元数据（EXIF 等）
      * 
      * @param sourceUri 源图片 URI
      * @param albumName 相册名称
@@ -378,31 +381,33 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
         fileName: String
     ): Uri? {
         try {
-            // 获取目标相对路径（可能是现有系统相册路径或 Tabula 路径）
+            // 获取目标相对路径
             val targetRelativePath = getAlbumRelativePath(albumName)
             
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // 方法1：尝试通过更新 RELATIVE_PATH 来移动
-                val updateValues = ContentValues().apply {
-                    put(MediaStore.Images.Media.RELATIVE_PATH, targetRelativePath)
-                    put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
-                }
-                
-                val updated = contentResolver.update(sourceUri, updateValues, null, null)
-                if (updated > 0) {
-                    Log.d(TAG, "Moved image using MediaStore update: $fileName -> $targetRelativePath")
-                    return sourceUri
-                }
+            // 方法1：通过更新 RELATIVE_PATH 来移动（真正的移动，保留所有元数据）
+            val updateValues = ContentValues().apply {
+                put(MediaStore.Images.Media.RELATIVE_PATH, targetRelativePath)
+                // 不改变 DISPLAY_NAME，保持原始文件名
+            }
+            
+            val updated = contentResolver.update(sourceUri, updateValues, null, null)
+            if (updated > 0) {
+                Log.d(TAG, "✓ Moved image via update: $fileName -> $targetRelativePath (preserved _id)")
+                return sourceUri
+            } else {
+                Log.w(TAG, "✗ Failed to move via update (returned 0), falling back to copy+delete: $fileName")
             }
 
-            // 方法2：如果更新失败，则复制后删除
+            // 方法2：如果更新失败，则复制后删除（会创建新的 _id）
+            Log.d(TAG, "Falling back to copy+delete for: $fileName")
             val newUri = copyImageUsingMediaStore(sourceUri, albumName, fileName)
             if (newUri != null) {
                 deleteOriginalImage(sourceUri)
+                Log.d(TAG, "Moved image via copy+delete: $fileName -> $targetRelativePath (new _id)")
             }
             return newUri
         } catch (e: Exception) {
-            Log.e(TAG, "Error moving image using MediaStore", e)
+            Log.e(TAG, "Error moving image: $fileName", e)
             // 回退到复制+删除
             val newUri = copyImageUsingMediaStore(sourceUri, albumName, fileName)
             if (newUri != null) {
@@ -622,19 +627,30 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
                 return existingUri
             }
             
-            // 获取源图片的 DATE_TAKEN，用于保持封面排序一致性
+            // 获取源图片的时间元数据，保持原始时间戳
             var dateTaken: Long? = null
+            var dateAdded: Long? = null
+            var dateModified: Long? = null
             contentResolver.query(
                 sourceUri,
-                arrayOf(MediaStore.Images.Media.DATE_TAKEN),
+                arrayOf(
+                    MediaStore.Images.Media.DATE_TAKEN,
+                    MediaStore.Images.Media.DATE_ADDED,
+                    MediaStore.Images.Media.DATE_MODIFIED
+                ),
                 null,
                 null,
                 null
             )?.use { cursor ->
                 if (cursor.moveToFirst()) {
-                    val dateIndex = cursor.getColumnIndex(MediaStore.Images.Media.DATE_TAKEN)
-                    if (dateIndex >= 0) {
-                        dateTaken = cursor.getLong(dateIndex)
+                    cursor.getColumnIndex(MediaStore.Images.Media.DATE_TAKEN).takeIf { it >= 0 }?.let {
+                        dateTaken = cursor.getLong(it)
+                    }
+                    cursor.getColumnIndex(MediaStore.Images.Media.DATE_ADDED).takeIf { it >= 0 }?.let {
+                        dateAdded = cursor.getLong(it)
+                    }
+                    cursor.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED).takeIf { it >= 0 }?.let {
+                        dateModified = cursor.getLong(it)
                     }
                 }
             }
@@ -642,12 +658,12 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
             val values = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
                 put(MediaStore.Images.Media.MIME_TYPE, getMimeType(fileName))
-                // 保留原始拍摄时间，帮助系统相册正确排序
+                // 保留原始时间戳
                 dateTaken?.let { put(MediaStore.Images.Media.DATE_TAKEN, it) }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.Images.Media.RELATIVE_PATH, targetRelativePath)
-                    put(MediaStore.Images.Media.IS_PENDING, 1)
-                }
+                dateAdded?.let { put(MediaStore.Images.Media.DATE_ADDED, it) }
+                dateModified?.let { put(MediaStore.Images.Media.DATE_MODIFIED, it) }
+                put(MediaStore.Images.Media.RELATIVE_PATH, targetRelativePath)
+                put(MediaStore.Images.Media.IS_PENDING, 1)
             }
 
             val newUri = contentResolver.insert(
@@ -665,12 +681,13 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
                 }
             }
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val updateValues = ContentValues().apply {
-                    put(MediaStore.Images.Media.IS_PENDING, 0)
-                }
-                contentResolver.update(newUri, updateValues, null, null)
+            // 完成 pending 状态，并再次设置原始时间戳（防止被系统覆盖）
+            val updateValues = ContentValues().apply {
+                put(MediaStore.Images.Media.IS_PENDING, 0)
+                // 再次设置时间戳，确保不被覆盖
+                dateModified?.let { put(MediaStore.Images.Media.DATE_MODIFIED, it) }
             }
+            contentResolver.update(newUri, updateValues, null, null)
 
             Log.d(TAG, "Copied image using MediaStore: $fileName -> $targetRelativePath")
             return newUri
@@ -1045,33 +1062,60 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
     /**
      * 创建新的系统相册（文件夹）并返回其相对路径
      * 
+     * 使用 MediaStore API 创建占位文件来间接创建文件夹。
+     * Scoped Storage 限制下，无法直接使用 File API 在公共目录创建文件/文件夹。
+     * 
      * @param albumName 相册名称
      * @return 创建的相册相对路径（如 "Pictures/Tabula/旅行"）
      */
     suspend fun createBucket(albumName: String): String? = withContext(Dispatchers.IO) {
         try {
-            // 使用默认路径创建
             val relativePath = getAlbumRelativePath(albumName)
-            val albumFolder = getAlbumFolder(albumName, useExistingPath = false)
             
-            if (!albumFolder.exists()) {
-                val created = albumFolder.mkdirs()
-                if (!created) {
-                    Log.e(TAG, "Failed to create bucket folder: ${albumFolder.absolutePath}")
-                    return@withContext null
+            // 使用 MediaStore API 创建占位文件来间接创建文件夹
+            // 文件夹会在创建第一个文件时自动生成
+            val placeholderName = ".tabula_placeholder_${System.currentTimeMillis()}.jpg"
+            
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, placeholderName)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                put(MediaStore.Images.Media.RELATIVE_PATH, relativePath)
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+            
+            val placeholderUri = contentResolver.insert(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                values
+            )
+            
+            if (placeholderUri != null) {
+                // 写入最小的有效 JPEG 数据，防止 MediaStore 拒绝空文件
+                contentResolver.openOutputStream(placeholderUri)?.use { output ->
+                    // 最小的有效 JPEG 文件头
+                    val minimalJpeg = byteArrayOf(
+                        0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(),
+                        0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+                        0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+                        0xFF.toByte(), 0xD9.toByte()
+                    )
+                    output.write(minimalJpeg)
                 }
+                
+                // 完成 pending 状态
+                val updateValues = ContentValues().apply {
+                    put(MediaStore.Images.Media.IS_PENDING, 0)
+                }
+                contentResolver.update(placeholderUri, updateValues, null, null)
+                
+                // 立即删除占位文件，文件夹会保留
+                contentResolver.delete(placeholderUri, null, null)
+                
+                Log.d(TAG, "Created bucket: $albumName at $relativePath")
+                return@withContext relativePath
+            } else {
+                Log.e(TAG, "Failed to create placeholder file for bucket: $albumName")
+                return@withContext null
             }
-
-            // 创建占位文件确保文件夹被 MediaStore 识别
-            val placeholder = File(albumFolder, ".nomedia_placeholder")
-            if (!placeholder.exists()) {
-                placeholder.createNewFile()
-                // 立即删除，只是为了确保文件夹被创建
-                placeholder.delete()
-            }
-
-            Log.d(TAG, "Created bucket: $albumName at $relativePath")
-            relativePath
         } catch (e: Exception) {
             Log.e(TAG, "Error creating bucket: $albumName", e)
             null

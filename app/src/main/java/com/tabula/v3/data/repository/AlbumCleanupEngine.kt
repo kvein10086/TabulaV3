@@ -32,10 +32,19 @@ data class AlbumCleanupBatch(
      * 获取指定索引对应的组ID
      */
     fun getGroupIdForIndex(index: Int): String? {
+        // 索引越界检查
+        if (index < 0 || index >= images.size) return null
+        
         for (i in groupBoundaries.indices) {
             val start = groupBoundaries[i]
-            val end = if (i + 1 < groupBoundaries.size) groupBoundaries[i + 1] else images.size
-            if (index in start until end) {
+            val end = if (i + 1 < groupBoundaries.size) {
+                groupBoundaries[i + 1]
+            } else {
+                images.size
+            }
+            // 确保 end 不超过 images.size
+            val validEnd = end.coerceAtMost(images.size)
+            if (index in start until validEnd) {
                 return groupIds.getOrNull(i)
             }
         }

@@ -125,6 +125,22 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         hasPermission = isGranted
+        
+        // 权限被拒绝后的处理
+        if (!isGranted) {
+            // 检查是否应该显示权限说明（如果返回 false，表示用户选择了"不再询问"）
+            val permission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                Manifest.permission.READ_MEDIA_IMAGES
+            } else {
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            }
+            
+            val shouldShowRationale = shouldShowRequestPermissionRationale(permission)
+            if (!shouldShowRationale) {
+                // 用户选择了"不再询问"，提示前往设置开启权限
+                Log.w("MainActivity", "Permission permanently denied, user should enable it in settings")
+            }
+        }
     }
 
     // 删除权限请求（Android 11+ MediaStore 删除确认）
@@ -203,6 +219,8 @@ class MainActivity : ComponentActivity() {
     
     override fun onResume() {
         super.onResume()
+        // 返回应用时重新检查权限（用户可能在系统设置中撤销了权限）
+        checkPermission()
         // 返回应用时隐藏流体云
         FluidCloudService.hide(this)
     }
@@ -265,7 +283,15 @@ fun TabulaApp(
 
     // ========== 引导流程状态 ==========
     // 只在首次启动时显示引导流程
-    var showOnboarding by remember { mutableStateOf(!preferences.hasCompletedOnboarding) }
+    // 使用 rememberSaveable 保存状态，避免配置变更时丢失
+    var showOnboarding by rememberSaveable { mutableStateOf(!preferences.hasCompletedOnboarding) }
+    
+    // 监听 preferences.hasCompletedOnboarding 变化，保持状态同步
+    LaunchedEffect(preferences.hasCompletedOnboarding) {
+        if (preferences.hasCompletedOnboarding) {
+            showOnboarding = false
+        }
+    }
 
     // ========== 设置 ==========
     var currentBatchSize by remember { mutableIntStateOf(preferences.batchSize) }
@@ -575,20 +601,34 @@ fun TabulaApp(
             },
             onCreateAlbum = { name, color, emoji ->
                 scope.launch {
-                    albumManager.createAlbum(name, color, emoji)
+                    try {
+                        albumManager.createAlbum(name, color, emoji)
+                    } catch (e: Exception) {
+                        Log.e("TabulaApp", "Failed to create album: $name", e)
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "创建图集失败: ${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }
             },
             onCreateAlbumAndClassify = { name, color, emoji, image ->
                 scope.launch {
-                    // 先提交之前的 pending action（如果有）
-                    albumManager.getLastPendingArchive()?.let { 
-                        albumManager.commitPendingArchive(it.id)
+                    try {
+                        // 先提交之前的 pending action（如果有）
+                        albumManager.getLastPendingArchive()?.let { 
+                            albumManager.commitPendingArchive(it.id)
+                        }
+                        
+                        // 1. 创建图集
+                        val newAlbum = albumManager.createAlbum(name, color, emoji)
+                        // 2. 将图片加入待归档队列
+                        albumManager.queueImageToAlbum(image.id, image.uri.toString(), newAlbum.id, newAlbum.name)
+                    } catch (e: Exception) {
+                        Log.e("TabulaApp", "Failed to create album and classify: $name", e)
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "创建图集失败: ${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
+                        }
                     }
-                    
-                    // 1. 创建图集
-                    val newAlbum = albumManager.createAlbum(name, color, emoji)
-                    // 2. 将图片加入待归档队列
-                    albumManager.queueImageToAlbum(image.id, image.uri.toString(), newAlbum.id, newAlbum.name)
                 }
             },
             onUndoAlbumAction = {
@@ -664,6 +704,23 @@ fun TabulaApp(
             // 显示/隐藏 隐藏的图集
             showHiddenAlbums = showHiddenAlbums,
             onToggleShowHidden = { showHiddenAlbums = !showHiddenAlbums },
+            // 图集操作回调
+            onHideAlbum = { album ->
+                scope.launch {
+                    albumManager.hideAlbum(album.id)
+                    Toast.makeText(context, "相册已隐藏", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onExcludeAlbum = { album, excluded ->
+                scope.launch {
+                    albumManager.setAlbumExcludedFromRecommend(album.id, excluded)
+                    val message = if (excluded) "已屏蔽，不再推荐此图集的照片" else "已取消屏蔽"
+                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                }
+            },
+            isAlbumExcluded = { album ->
+                albumManager.isAlbumExcludedFromRecommend(album.id)
+            },
             onBatchRemainingChange = { remaining ->
                 // 更新流体云的批次剩余数量
                 (context as? MainActivity)?.updateBatchRemaining(remaining, fluidCloudEnabled)
@@ -989,7 +1046,16 @@ fun TabulaApp(
             getImagesForAlbum = { albumId -> albumManager.getImageIdsForAlbum(albumId) },
             getImageMappingsForAlbum = { albumId -> albumManager.getImageMappingsForAlbum(albumId) },
             onCreateAlbum = { name, color, emoji ->
-                scope.launch { albumManager.createAlbum(name, color, emoji) }
+                scope.launch {
+                    try {
+                        albumManager.createAlbum(name, color, emoji)
+                    } catch (e: Exception) {
+                        Log.e("TabulaApp", "Failed to create album in AlbumView: $name", e)
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "创建图集失败: ${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
             },
             onUpdateAlbum = { album ->
                 scope.launch { albumManager.updateAlbum(album) }

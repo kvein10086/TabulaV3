@@ -271,11 +271,14 @@ fun ViewerOverlay(
         }
         delay(pressDelayMs)
         if (isPressing) {
-            if (isHdr) {
-                isHdrComparePressed = true
-            }
+            // 优先级：Live Photo > HDR 对比
+            // 如果图片同时有 HDR 和 Live Photo，长按只播放 Live Photo
             if (motionInfo != null) {
                 isLivePressed = true
+                // 不触发 HDR 对比，保持 HDR 效果显示
+            } else if (isHdr) {
+                // 只有纯 HDR 图片（没有 Live Photo）才触发对比模式
+                isHdrComparePressed = true
             }
         }
     }
@@ -552,40 +555,10 @@ fun ViewerOverlay(
                 val targetDim = scaledSize.coerceIn(1, maxAllowed)
                 coil.size.Size(targetDim, targetDim)
             }
-            
-            if (motionInfo != null) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(context)
-                            .data(image.uri)
-                            .size(hdTargetSize)
-                            .precision(Precision.INEXACT)
-                            .crossfade(200)
-                            .bitmapConfig(Bitmap.Config.ARGB_8888)
-                            .build(),
-                        contentDescription = image.displayName,
-                        imageLoader = imageLoader,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize(),
-                        onState = { state ->
-                            if (state is AsyncImagePainter.State.Success) {
-                                isHdImageLoaded = true
-                                if (shouldLoadUltraHd) {
-                                    isUltraHdLoaded = true
-                                }
-                            }
-                        }
-                    )
-                    MotionPhotoPlayer(
-                        imageUri = image.uri,
-                        motionInfo = motionInfo,
-                        modifier = Modifier.fillMaxSize(),
-                        playWhen = isLivePressed,
-                        playAudio = playMotionSound,
-                        volumePercent = motionSoundVolume
-                    )
-                }
-            } else {
+            // 上层：高清图片
+            // 注意：只有在长按播放 Live Photo 时才渲染 MotionPhotoPlayer
+            // 否则 TextureView 会覆盖底层的 HDR 图片，导致 HDR 效果消失
+            Box(modifier = Modifier.fillMaxSize()) {
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(image.uri)
@@ -607,6 +580,18 @@ fun ViewerOverlay(
                         }
                     }
                 )
+                
+                // 只有在长按时才显示 MotionPhotoPlayer，避免 TextureView 覆盖 HDR 图片
+                if (motionInfo != null && isLivePressed) {
+                    MotionPhotoPlayer(
+                        imageUri = image.uri,
+                        motionInfo = motionInfo,
+                        modifier = Modifier.fillMaxSize(),
+                        playWhen = true,
+                        playAudio = playMotionSound,
+                        volumePercent = motionSoundVolume
+                    )
+                }
             }
         }
     }

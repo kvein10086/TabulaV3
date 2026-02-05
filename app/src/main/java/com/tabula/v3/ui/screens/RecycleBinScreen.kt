@@ -21,6 +21,7 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -674,7 +675,12 @@ private fun FullScreenViewer(
             state = pagerState,
             modifier = Modifier.fillMaxSize(),
             userScrollEnabled = !isMultiTouchActive && currentPageZoom <= 1.05f,
-            key = { images.getOrNull(it)?.id ?: it }
+            key = { images.getOrNull(it)?.id ?: it },
+            // 添加 flingBehavior 确保滑动后对齐到页面，防止卡在两图之间
+            flingBehavior = PagerDefaults.flingBehavior(
+                state = pagerState,
+                snapPositionalThreshold = 0.35f  // 滑动超过35%就切换到下一页
+            )
         ) { pageIndex ->
             val pageImage = images.getOrNull(pageIndex)
             if (pageImage != null) {
@@ -920,11 +926,14 @@ private fun RecycleBinImagePage(
         }
         delay(pressDelayMs)
         if (isPressing) {
-            if (isHdr) {
-                isHdrComparePressed = true
-            }
+            // 优先级：Live Photo > HDR 对比
+            // 如果图片同时有 HDR 和 Live Photo，长按只播放 Live Photo
             if (currentMotionInfo != null) {
                 isLivePressed = true
+                // 不触发 HDR 对比，保持 HDR 效果显示
+            } else if (isHdr) {
+                // 只有纯 HDR 图片（没有 Live Photo）才触发对比模式
+                isHdrComparePressed = true
             }
         }
     }
@@ -1136,12 +1145,13 @@ private fun RecycleBinImagePage(
                 modifier = Modifier.fillMaxSize()
             )
 
-            if (currentMotionInfo != null) {
+            // 只有在长按时才显示 MotionPhotoPlayer，避免 TextureView 覆盖 HDR 图片
+            if (currentMotionInfo != null && isLivePressed) {
                 MotionPhotoPlayer(
                     imageUri = image.uri,
                     motionInfo = currentMotionInfo,
                     modifier = Modifier.fillMaxSize(),
-                    playWhen = isLivePressed,
+                    playWhen = true,
                     playAudio = playMotionSound,
                     volumePercent = motionSoundVolume
                 )

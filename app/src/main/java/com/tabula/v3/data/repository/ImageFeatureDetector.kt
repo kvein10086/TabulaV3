@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.ColorSpace
 import android.graphics.ImageDecoder
 import android.net.Uri
+import android.os.Build
 import android.provider.MediaStore
 import android.util.Base64
 import android.util.Log
@@ -45,7 +46,12 @@ object ImageFeatureDetector {
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
                 hdrColorSpace = isHdrColorSpace(info.colorSpace)
             }
-            if (bitmap.hasGainmap() || hdrColorSpace) {
+            val hasGainmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                bitmap.hasGainmap()
+            } else {
+                false
+            }
+            if (hasGainmap || hdrColorSpace) {
                 true
             } else {
                 xmp?.let { containsHdrXmp(it) } ?: containsHdrExifHint(context, uri)
@@ -130,8 +136,14 @@ object ImageFeatureDetector {
 
     
     private fun isHdrColorSpace(colorSpace: ColorSpace?): Boolean {
-        return colorSpace == ColorSpace.get(ColorSpace.Named.BT2020_PQ) ||
-            colorSpace == ColorSpace.get(ColorSpace.Named.BT2020_HLG)
+        if (colorSpace == null) return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            colorSpace == ColorSpace.get(ColorSpace.Named.BT2020_PQ) ||
+                colorSpace == ColorSpace.get(ColorSpace.Named.BT2020_HLG)
+        } else {
+            // Fallback for API < 34: check by name
+            colorSpace.name == "BT2020_PQ" || colorSpace.name == "BT2020_HLG"
+        }
     }
 
     private fun queryHdrFlag(resolver: ContentResolver, uri: Uri): Boolean? {

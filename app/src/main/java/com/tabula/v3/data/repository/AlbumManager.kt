@@ -99,7 +99,8 @@ class AlbumManager(private val context: Context) {
     )
     
     // 待执行队列（栈结构，后进先撤销）
-    private val pendingArchiveQueue = mutableListOf<PendingArchive>()
+    // 使用 synchronizedList 保证线程安全，因为 queueImageToAlbum、cancelLastPendingArchive、commitPendingArchive 可能并发调用
+    private val pendingArchiveQueue = java.util.Collections.synchronizedList(mutableListOf<PendingArchive>())
     
     // 旧的撤销队列（保留兼容性，但不再使用）
     @Deprecated("使用 pendingArchiveQueue 替代")
@@ -152,10 +153,12 @@ class AlbumManager(private val context: Context) {
         // 1. 在系统中创建文件夹
         val relativePath = syncManager.createBucket(name)
         if (relativePath == null) {
-            Log.e(TAG, "Failed to create system bucket for $name")
+            // 系统文件夹创建失败，不保存元数据，避免数据不一致
+            Log.e(TAG, "Failed to create system bucket for $name, aborting album creation")
+            throw IllegalStateException("无法创建图集文件夹，请检查存储权限")
         }
 
-        // 2. 保存元数据（颜色、排序）
+        // 2. 保存元数据（颜色、排序）- 只有系统文件夹创建成功才保存
         val currentMetadata = loadMetadata()
         val maxOrder = currentMetadata.values.maxOfOrNull { it.order } ?: _albums.value.size
         

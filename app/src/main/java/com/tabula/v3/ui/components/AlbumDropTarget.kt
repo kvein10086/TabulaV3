@@ -181,7 +181,7 @@ fun AlbumDropTarget(
  * - 高斯模糊背景 (20-30dp)
  * - 半透明填充 (白色/黑色 40%-70%)
  * - 细微边框 (0.5-1dp, 白色 20%-30% 透明度)
- * - 选中时有放大效果
+ * - 选中时使用对比色高亮（无缩放效果）
  *
  * @param text 标签文字
  * @param isSelected 是否选中
@@ -199,15 +199,8 @@ private fun DropTargetChip(
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     
-    // 选中时放大动画
-    val scale by animateFloatAsState(
-        targetValue = if (isSelected) 1.08f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMedium
-        ),
-        label = "chip_scale"
-    )
+    // 移除缩放动画，选中时保持原始大小
+    // val scale by animateFloatAsState(...)
     
     // Glassmorphism 颜色配置
     // 填充颜色：选中时使用对比色（浅色模式用深色，深色模式用浅色）
@@ -237,7 +230,6 @@ private fun DropTargetChip(
     // 使用 AdaptiveGlass 组件实现玻璃效果（自动适配液态玻璃/毛玻璃）
     AdaptiveGlass(
         modifier = Modifier
-            .scale(scale)
             .onGloballyPositioned { coordinates ->
                 onPositioned?.invoke(
                     TagPosition(

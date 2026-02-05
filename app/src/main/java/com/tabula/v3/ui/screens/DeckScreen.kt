@@ -2,6 +2,7 @@ package com.tabula.v3.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -193,6 +194,10 @@ fun DeckScreen(
     // 显示/隐藏 隐藏的图集
     showHiddenAlbums: Boolean = false,
     onToggleShowHidden: () -> Unit = {},
+    // 图集操作回调
+    onHideAlbum: ((Album) -> Unit)? = null,  // 隐藏图集
+    onExcludeAlbum: ((Album, Boolean) -> Unit)? = null,  // 屏蔽/取消屏蔽图集
+    isAlbumExcluded: ((Album) -> Boolean)? = null,  // 检查图集是否被屏蔽
     // 流体云：批次剩余数量回调
     onBatchRemainingChange: (Int) -> Unit = {},
     // 快捷操作按钮
@@ -693,12 +698,17 @@ fun DeckScreen(
         viewerState = null
     }
 
-    // ========== 预渲染优化：图集界面透明度动画 ==========
-    // 图集界面始终存在，通过透明度控制显示，避免切换时的初始化延迟
-    val albumsAlpha by animateFloatAsState(
+    // ========== 预渲染优化：图集界面滑动过渡动画 ==========
+    // 使用水平偏移实现"推入推出"效果
+    // 卡片模式: slideProgress = 0f (卡片在中间，图集在右侧屏幕外)
+    // 图集模式: slideProgress = 1f (图集在中间，卡片在左侧屏幕外)
+    val slideProgress by animateFloatAsState(
         targetValue = if (isAlbumMode) 1f else 0f,
-        animationSpec = tween(durationMillis = 250),
-        label = "albums_alpha"
+        animationSpec = tween(
+            durationMillis = 350,
+            easing = FastOutSlowInEasing  // 开始快、结尾慢，丝滑自然
+        ),
+        label = "slide_progress"
     )
     
     Box(
@@ -731,7 +741,17 @@ fun DeckScreen(
             label = "deck_state",
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer { alpha = 1f - albumsAlpha }  // 图集模式时隐藏卡片内容
+                // 卡片界面：从中间滑向左侧（slideProgress: 0→1 时，offsetX: 0→-30%）
+                // 使用较小的偏移比例，让卡片"被推开"的感觉更自然
+                .graphicsLayer { 
+                    translationX = -size.width * 0.3f * slideProgress
+                    // 轻微缩放，增加层次感
+                    val scale = 1f - 0.05f * slideProgress
+                    scaleX = scale
+                    scaleY = scale
+                    // 渐隐效果
+                    alpha = 1f - 0.3f * slideProgress
+                }
         ) { state ->
             when (state) {
                 "loading" -> LoadingState()
@@ -771,8 +791,8 @@ fun DeckScreen(
                         albums = albums,
                         currentImageAlbumIds = currentImageAlbumIds,
                         onIndexChange = { newIndex ->
-                            // 如果向后滑超过最后一张，进入完成页面
-                            if (newIndex >= currentBatch.size) {
+                            // 统一批次完成判断：索引超出范围或批次为空
+                            if (newIndex >= currentBatch.size || currentBatch.isEmpty()) {
                                 // 图集清理模式：标记组完成并获取下一批
                                 if (isAlbumCleanupMode && albumCleanupEngine != null && currentCleanupBatch != null) {
                                     scope.launch {
@@ -836,8 +856,12 @@ fun DeckScreen(
                                 if (newIndex > currentIndex) {
                                     onKeep()
                                 }
-                                // 防止空列表时 lastIndex 为 -1 导致 coerceIn 崩溃
-                                currentIndex = newIndex.coerceIn(0, currentBatch.lastIndex.coerceAtLeast(0))
+                                // 防止空列表时索引越界
+                                currentIndex = if (currentBatch.isEmpty()) {
+                                    0
+                                } else {
+                                    newIndex.coerceIn(0, currentBatch.lastIndex)
+                                }
                             }
                         },
                         onRemove = { image ->
@@ -1065,13 +1089,18 @@ fun DeckScreen(
             }
         }
 
-        // ========== 预渲染的图集界面（始终存在，通过透明度控制显示）==========
+        // ========== 预渲染的图集界面（始终存在，通过滑动控制显示）==========
         // 性能优化：避免切换时的组件初始化延迟
-        if (albumsAlpha > 0f || isAlbumMode) {
+        if (slideProgress > 0f || isAlbumMode) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer { alpha = albumsAlpha }
+                    // 图集界面：从右侧滑向中间（slideProgress: 0→1 时，offsetX: 100%→0）
+                    .graphicsLayer { 
+                        translationX = size.width * (1f - slideProgress)
+                        // 渐显效果，让出现更柔和
+                        alpha = slideProgress
+                    }
             ) {
                 AlbumsGridContent(
                     albums = albums,
@@ -1081,6 +1110,9 @@ fun DeckScreen(
                     onAlbumClick = onNavigateToAlbumDetail,
                     onSystemBucketClick = onSystemBucketClick,
                     onReorderAlbums = onReorderAlbums,
+                    onHideAlbum = onHideAlbum,
+                    onExcludeAlbum = onExcludeAlbum,
+                    isAlbumExcluded = isAlbumExcluded,
                     onSyncClick = onSyncClick,
                     onSettingsClick = onNavigateToSettings,
                     showHiddenAlbums = showHiddenAlbums,
@@ -1165,10 +1197,19 @@ fun DeckScreen(
                 
                 // 恢复 UI 状态
                 lastClassifiedImage?.let { image ->
-                    if (lastClassifyWasSwipe) {
+                    // 检查图片是否已在批次中（防止重复插入）
+                    val isDuplicate = currentBatch.any { it.id == image.id }
+                    
+                    if (lastClassifyWasSwipe && !isDuplicate) {
                         // 下滑归类：将图片重新插入 batch
                         val newBatch = currentBatch.toMutableList()
-                        val insertIndex = lastClassifiedIndex.coerceIn(0, newBatch.size)
+                        // 使用安全的插入索引：如果原索引仍有效则使用，否则插入到当前位置
+                        val insertIndex = if (lastClassifiedIndex >= 0 && lastClassifiedIndex <= newBatch.size) {
+                            lastClassifiedIndex
+                        } else {
+                            // 原索引无效，插入到当前位置或末尾
+                            currentIndex.coerceIn(0, newBatch.size)
+                        }
                         newBatch.add(insertIndex, image)
                         currentBatch = newBatch
                         currentIndex = insertIndex
@@ -1176,7 +1217,7 @@ fun DeckScreen(
                         if (deckState == DeckState.COMPLETED) {
                             deckState = DeckState.BROWSING
                         }
-                    } else {
+                    } else if (!lastClassifyWasSwipe) {
                         // 点击 Chip 归类：回退索引
                         if (currentIndex > 0 && currentIndex > lastClassifiedIndex) {
                             currentIndex = lastClassifiedIndex
@@ -1985,6 +2026,9 @@ private fun AlbumsGridContent(
     onAlbumClick: (Album) -> Unit,
     onSystemBucketClick: (String) -> Unit = {},
     onReorderAlbums: (List<String>) -> Unit = {},
+    onHideAlbum: ((Album) -> Unit)? = null,  // 隐藏图集
+    onExcludeAlbum: ((Album, Boolean) -> Unit)? = null,  // 屏蔽/取消屏蔽图集
+    isAlbumExcluded: ((Album) -> Boolean)? = null,  // 检查图集是否被屏蔽
     onSyncClick: () -> Unit = {},
     onSettingsClick: () -> Unit = {},
     showHiddenAlbums: Boolean = false,
@@ -2040,6 +2084,9 @@ private fun AlbumsGridContent(
                 onSystemBucketClick = onSystemBucketClick,
                 onReorderAlbums = onReorderAlbums,
                 onCreateAlbumClick = { showCreateDialog = true },
+                onHideAlbum = onHideAlbum,
+                onExcludeAlbum = onExcludeAlbum,
+                isAlbumExcluded = isAlbumExcluded,
                 textColor = textColor,
                 secondaryTextColor = secondaryTextColor,
                 isDarkTheme = isDarkTheme,

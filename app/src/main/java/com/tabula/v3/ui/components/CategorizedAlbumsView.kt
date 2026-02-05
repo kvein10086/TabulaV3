@@ -26,6 +26,9 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Block
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -81,6 +84,9 @@ fun CategorizedAlbumsView(
     onSystemBucketClick: (String) -> Unit,
     onReorderAlbums: (List<String>) -> Unit,
     onCreateAlbumClick: (() -> Unit)? = null,  // 新建图集点击回调
+    onHideAlbum: ((Album) -> Unit)? = null,  // 隐藏图集回调
+    onExcludeAlbum: ((Album, Boolean) -> Unit)? = null,  // 屏蔽/取消屏蔽图集回调
+    isAlbumExcluded: ((Album) -> Boolean)? = null,  // 检查图集是否被屏蔽
     textColor: Color,
     secondaryTextColor: Color,
     isDarkTheme: Boolean,
@@ -179,6 +185,9 @@ fun CategorizedAlbumsView(
                             onAlbumClick = onAppAlbumClick,
                             onReorder = onReorderAlbums,
                             onCreateAlbumClick = onCreateAlbumClick,
+                            onHideAlbum = onHideAlbum,
+                            onExcludeAlbum = onExcludeAlbum,
+                            isAlbumExcluded = isAlbumExcluded,
                             onDraggingChange = { dragging -> isDraggingAlbum = dragging },
                             textColor = textColor,
                             secondaryTextColor = secondaryTextColor,
@@ -742,6 +751,7 @@ private fun CreateAlbumCardHorizontal(
  * 
  * 支持长按拖拽排序，3列布局，第一个位置为新建按钮
  * 支持拖拽到边缘时自动滚动
+ * 支持长按不拖动时选中图集并显示操作菜单
  */
 @Composable
 private fun DraggableAlbumsGridInternal(
@@ -751,6 +761,9 @@ private fun DraggableAlbumsGridInternal(
     onAlbumClick: (Album) -> Unit,
     onReorder: (List<String>) -> Unit,
     onCreateAlbumClick: (() -> Unit)?,
+    onHideAlbum: ((Album) -> Unit)? = null,  // 隐藏图集回调
+    onExcludeAlbum: ((Album, Boolean) -> Unit)? = null,  // 屏蔽/取消屏蔽图集回调
+    isAlbumExcluded: ((Album) -> Boolean)? = null,  // 检查图集是否被屏蔽
     onDraggingChange: (Boolean) -> Unit,
     textColor: Color,
     secondaryTextColor: Color,
@@ -780,6 +793,16 @@ private fun DraggableAlbumsGridInternal(
     var currentTargetIndex by remember { mutableIntStateOf(-1) }  // 当前预览目标位置
     var dragOffsetX by remember { mutableFloatStateOf(0f) }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
+    
+    // ========== 选中图集状态 ==========
+    // 用于长按不拖动时的图集选中
+    var selectedAlbum by remember { mutableStateOf<Album?>(null) }
+    var hasDragged by remember { mutableStateOf(false) }  // 是否有拖动过（区分长按选中和拖拽排序）
+    
+    // 长按自动弹出菜单的协程 Job（用于取消）
+    var longPressMenuJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    // 菜单是否刚刚自动弹出（用于防止松手时误触发点击）
+    var menuAutoShown by remember { mutableStateOf(false) }
     
     // 网格布局参数
     val itemWidth = remember { mutableFloatStateOf(0f) }
@@ -1074,32 +1097,68 @@ private fun DraggableAlbumsGridInternal(
                                                 dragOffsetX = 0f
                                                 dragOffsetY = 0f
                                                 rawDragOffsetY = 0f
+                                                hasDragged = false  // 重置拖动标志
                                                 // 记录拖拽开始时触摸点的屏幕 Y 坐标
                                                 touchStartScreenY = cardScreenY + startOffset.y
                                                 currentTouchScreenY = touchStartScreenY
                                                 android.util.Log.d("DragScroll", "onDragStart: cardScreenY=$cardScreenY, startOffset.y=${startOffset.y}, touchStartScreenY=$touchStartScreenY")
                                                 onDraggingChange(true)
+                                                
+                                                // 启动长按自动弹出菜单的延迟任务（默认1秒）
+                                                // 如果在这段时间内没有拖动（hasDragged 仍为 false），则自动弹出菜单
+                                                longPressMenuJob = coroutineScope.launch {
+                                                    kotlinx.coroutines.delay(1000L)  // 1秒后自动弹出
+                                                    if (!hasDragged && draggingAlbumId == album.id) {
+                                                        // 1秒内没有拖动，自动弹出菜单
+                                                        HapticFeedback.lightTap(context)
+                                                        selectedAlbum = album
+                                                        menuAutoShown = true  // 标记菜单已自动弹出
+                                                        // 清除拖拽状态，防止后续拖动
+                                                        draggingAlbumId = null
+                                                        draggingStartIndex = -1
+                                                        currentTargetIndex = -1
+                                                        dragOffsetX = 0f
+                                                        dragOffsetY = 0f
+                                                        rawDragOffsetY = 0f
+                                                        currentTouchScreenY = 0f
+                                                        onDraggingChange(false)
+                                                    }
+                                                }
                                             },
                                             onDragEnd = {
-                                                // 计算最终目标位置
-                                                val targetIdx = currentTargetIndex
-                                                val startIdx = draggingStartIndex
-                                                
-                                                HapticFeedback.lightTap(context)
+                                                // 取消长按自动弹出菜单的延迟任务
+                                                longPressMenuJob?.cancel()
+                                                longPressMenuJob = null
                                                 
                                                 // 停止自动滚动
                                                 currentTouchScreenY = 0f
                                                 
-                                                // 如果位置变化了，重新排序
-                                                if (targetIdx != startIdx && targetIdx >= 0) {
-                                                    // 先更新本地状态，确保 UI 立即显示新顺序
-                                                    val newList = orderedAlbums.toMutableList()
-                                                    val item = newList.removeAt(startIdx)
-                                                    newList.add(targetIdx, item)
-                                                    orderedAlbums = newList  // 立即更新本地状态
+                                                // 检查是否有实际拖动
+                                                if (!hasDragged) {
+                                                    // 没有拖动 = 长按选中图集（如果菜单还没自动弹出）
+                                                    if (selectedAlbum == null) {
+                                                        HapticFeedback.lightTap(context)
+                                                        selectedAlbum = album
+                                                        menuAutoShown = true  // 标记菜单已弹出
+                                                    }
+                                                } else {
+                                                    // 有拖动 = 排序操作
+                                                    val targetIdx = currentTargetIndex
+                                                    val startIdx = draggingStartIndex
                                                     
-                                                    // 再通知外部保存（异步操作不影响 UI）
-                                                    onReorder(newList.map { it.id })
+                                                    HapticFeedback.lightTap(context)
+                                                    
+                                                    // 如果位置变化了，重新排序
+                                                    if (targetIdx != startIdx && targetIdx >= 0) {
+                                                        // 先更新本地状态，确保 UI 立即显示新顺序
+                                                        val newList = orderedAlbums.toMutableList()
+                                                        val item = newList.removeAt(startIdx)
+                                                        newList.add(targetIdx, item)
+                                                        orderedAlbums = newList  // 立即更新本地状态
+                                                        
+                                                        // 再通知外部保存（异步操作不影响 UI）
+                                                        onReorder(newList.map { it.id })
+                                                    }
                                                 }
                                                 
                                                 // 重置所有拖拽状态
@@ -1109,9 +1168,14 @@ private fun DraggableAlbumsGridInternal(
                                                 dragOffsetX = 0f
                                                 dragOffsetY = 0f
                                                 rawDragOffsetY = 0f
+                                                hasDragged = false
                                                 onDraggingChange(false)
                                             },
                                             onDragCancel = {
+                                                // 取消长按自动弹出菜单的延迟任务
+                                                longPressMenuJob?.cancel()
+                                                longPressMenuJob = null
+                                                
                                                 // 停止自动滚动
                                                 currentTouchScreenY = 0f
                                                 
@@ -1121,6 +1185,7 @@ private fun DraggableAlbumsGridInternal(
                                                 dragOffsetX = 0f
                                                 dragOffsetY = 0f
                                                 rawDragOffsetY = 0f
+                                                hasDragged = false
                                                 onDraggingChange(false)
                                             },
                                             onDrag = { change, dragAmount ->
@@ -1129,6 +1194,15 @@ private fun DraggableAlbumsGridInternal(
                                                 dragOffsetY += dragAmount.y
                                                 // 记录用户手指的原始移动量（不含滚动补偿）
                                                 rawDragOffsetY += dragAmount.y
+                                                
+                                                // 检测是否有实际拖动（超过小阈值才算拖动）
+                                                val dragThreshold = 10f  // 10像素阈值
+                                                if (!hasDragged && (kotlin.math.abs(dragOffsetX) > dragThreshold || kotlin.math.abs(dragOffsetY) > dragThreshold)) {
+                                                    hasDragged = true
+                                                    // 一旦检测到拖动，取消自动弹出菜单
+                                                    longPressMenuJob?.cancel()
+                                                    longPressMenuJob = null
+                                                }
                                                 
                                                 // 实时更新触摸点的屏幕 Y 坐标（用于自动滚动检测）
                                                 // 使用原始移动量，不受滚动补偿影响
@@ -1147,7 +1221,14 @@ private fun DraggableAlbumsGridInternal(
                                 AppAlbumGridCard(
                                     album = album,
                                     coverImage = coverImage,
-                                    onClick = { if (!isDragging) onAlbumClick(album) },
+                                    onClick = { 
+                                        // 只有在非拖拽状态且菜单未自动弹出时才触发点击
+                                        if (!isDragging && !menuAutoShown) {
+                                            onAlbumClick(album)
+                                        }
+                                        // 重置菜单自动弹出标志
+                                        menuAutoShown = false
+                                    },
                                     textColor = textColor,
                                     secondaryTextColor = secondaryTextColor,
                                     isDarkTheme = isDarkTheme,
@@ -1164,6 +1245,140 @@ private fun DraggableAlbumsGridInternal(
                 }
             }
         }
+    }
+    
+    // ========== 图集操作弹窗 ==========
+    // 当长按选中图集后显示操作菜单
+    selectedAlbum?.let { album ->
+        val isExcluded = isAlbumExcluded?.invoke(album) ?: false
+        
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { selectedAlbum = null },
+            containerColor = if (isDarkTheme) Color(0xFF2C2C2E) else Color.White,
+            title = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (album.emoji != null) {
+                        Text(text = album.emoji, fontSize = 24.sp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+                    Text(
+                        text = album.name,
+                        color = textColor,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "${album.imageCount} 张照片",
+                        color = secondaryTextColor,
+                        fontSize = 14.sp
+                    )
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    // 屏蔽/取消屏蔽图集
+                    if (onExcludeAlbum != null) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (isDarkTheme) Color(0xFF3A3A3C) else Color(0xFFF2F2F7))
+                                .clickable {
+                                    HapticFeedback.lightTap(context)
+                                    onExcludeAlbum(album, !isExcluded)
+                                    selectedAlbum = null
+                                }
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (isExcluded) 
+                                    Icons.Outlined.CheckCircle 
+                                else 
+                                    Icons.Outlined.Block,
+                                contentDescription = null,
+                                tint = if (isExcluded) Color(0xFF34C759) else secondaryTextColor,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = if (isExcluded) "取消屏蔽" else "屏蔽图集",
+                                    color = textColor,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = if (isExcluded) "图集将恢复出现在推荐中" else "图集将不再出现在推荐中",
+                                    color = secondaryTextColor,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                    
+                    // 隐藏图集
+                    if (onHideAlbum != null && !album.isHidden) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (isDarkTheme) Color(0xFF3A3A3C) else Color(0xFFF2F2F7))
+                                .clickable {
+                                    HapticFeedback.lightTap(context)
+                                    onHideAlbum(album)
+                                    selectedAlbum = null
+                                }
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.VisibilityOff,
+                                contentDescription = null,
+                                tint = secondaryTextColor,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "隐藏图集",
+                                    color = textColor,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = "图集将在主界面隐藏",
+                                    color = secondaryTextColor,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = { selectedAlbum = null }
+                ) {
+                    Text(
+                        text = "取消",
+                        color = Color(0xFF007AFF),
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        )
     }
 }
 

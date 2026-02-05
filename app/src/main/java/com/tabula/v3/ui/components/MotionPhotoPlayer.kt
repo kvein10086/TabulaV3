@@ -104,6 +104,7 @@ fun MotionPhotoPlayer(
         modifier = modifier,
         factory = { ctx ->
             TextureView(ctx).apply {
+                isOpaque = false  // 设置为半透明，让底层 HDR 图片可以透过来
                 surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                     override fun onSurfaceTextureAvailable(
                         surfaceTexture: SurfaceTexture,

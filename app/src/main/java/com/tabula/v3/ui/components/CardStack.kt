@@ -278,9 +278,18 @@ fun SwipeableCardStack(
     // 组件销毁时清理预加载的 bitmap
     DisposableEffect(Unit) {
         onDispose {
-            preloadedBitmap?.recycle()
+            // 安全回收 bitmap，检查是否已回收
+            preloadedBitmap?.let { bitmap ->
+                if (!bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
+            }
             preloadedBitmap = null
-            preloadedDeleteBitmap?.recycle()
+            preloadedDeleteBitmap?.let { bitmap ->
+                if (!bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
+            }
             preloadedDeleteBitmap = null
         }
     }
@@ -355,13 +364,21 @@ fun SwipeableCardStack(
         lastSelectedIndex = -1
         onClassifyModeChange?.invoke(false)
         
-        // 清理预加载的 bitmap
-        preloadedBitmap?.recycle()
+        // 清理预加载的 bitmap（检查是否已回收，避免重复回收）
+        preloadedBitmap?.let { bitmap ->
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+            }
+        }
         preloadedBitmap = null
         isPreloading = false
         
         // 清理上滑删除的预加载 bitmap
-        preloadedDeleteBitmap?.recycle()
+        preloadedDeleteBitmap?.let { bitmap ->
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+            }
+        }
         preloadedDeleteBitmap = null
         isPreloadingDelete = false
     }
@@ -491,6 +508,10 @@ fun SwipeableCardStack(
      * 当滑到最后一张时，使用平滑的淡出过渡，避免回弹感
      */
     suspend fun executeShuffleAnimation(direction: Int) {
+        // 防止快速连续滑动时重复触发动画
+        if (isTransitioning) {
+            return
+        }
         isTransitioning = true
         pendingIndexChange = direction
 
@@ -750,12 +771,10 @@ fun SwipeableCardStack(
             // 使用标签上边的中点作为目标位置（更符合视觉效果）
             // 将绝对坐标转换为相对于容器的坐标
             // 
-            // 重要：选中的标签有 scale(1.1) 缩放动画，但 boundsInRoot() 返回的是缩放前的位置
-            // 缩放从中心进行，所以视觉上的 top 会向上偏移 height * 0.05
-            // 需要补偿这个偏移才能让动画目标点对准视觉上的标签上边中点
-            val scaleCompensation = tagBounds.height * 0.05f  // scale 1.1 = 中心向外扩展 5%
+            // 重要：boundsInRoot() 返回的是标签的实际位置
+            // 目标点设为标签上边中点
             targetCenterX = tagBounds.center.x - containerBounds.left
-            targetCenterY = tagBounds.top - containerBounds.top - scaleCompensation  // 上边的Y坐标（补偿缩放）
+            targetCenterY = tagBounds.top - containerBounds.top  // 上边的Y坐标
         } else {
             // 回退到估算值（仅在无法获取实际位置时使用）
             val tagEstimatedWidth = with(density) { 65.dp.toPx() }
@@ -1124,8 +1143,12 @@ fun SwipeableCardStack(
                                                     if (enableSwipeHaptics) {
                                                         HapticFeedback.lightTap(context)
                                                     }
-                                                    // 清理预加载的 bitmap
-                                                    preloadedBitmap?.recycle()
+                                                    // 清理预加载的 bitmap（检查是否已回收，避免重复回收）
+                                                    preloadedBitmap?.let { bitmap ->
+                                                        if (!bitmap.isRecycled) {
+                                                            bitmap.recycle()
+                                                        }
+                                                    }
                                                     preloadedBitmap = null
                                                     isPreloading = false
                                                 }
@@ -1474,11 +1497,19 @@ private fun DrawModeCardStack(
     var preloadedDeleteBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isPreloadingDelete by remember { mutableStateOf(false) }
     
-    // 清理
+    // 清理（检查是否已回收，避免重复回收）
     DisposableEffect(Unit) {
         onDispose {
-            preloadedBitmap?.recycle()
-            preloadedDeleteBitmap?.recycle()
+            preloadedBitmap?.let { bitmap ->
+                if (!bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
+            }
+            preloadedDeleteBitmap?.let { bitmap ->
+                if (!bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
+            }
         }
     }
     
@@ -1568,11 +1599,19 @@ private fun DrawModeCardStack(
         lastSelectedIndex = -1
         onClassifyModeChange?.invoke(false)
         
-        // 清理预加载
-        preloadedBitmap?.recycle()
+        // 清理预加载（检查是否已回收，避免重复回收）
+        preloadedBitmap?.let { bitmap ->
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+            }
+        }
         preloadedBitmap = null
         isPreloading = false
-        preloadedDeleteBitmap?.recycle()
+        preloadedDeleteBitmap?.let { bitmap ->
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+            }
+        }
         preloadedDeleteBitmap = null
         isPreloadingDelete = false
     }
@@ -2549,7 +2588,12 @@ private fun DrawModeCardStack(
                                                     if (enableSwipeHaptics) {
                                                         HapticFeedback.lightTap(context)
                                                     }
-                                                    preloadedBitmap?.recycle()
+                                                    // 清理预加载（检查是否已回收，避免重复回收）
+                                                    preloadedBitmap?.let { bitmap ->
+                                                        if (!bitmap.isRecycled) {
+                                                            bitmap.recycle()
+                                                        }
+                                                    }
                                                     preloadedBitmap = null
                                                     isPreloading = false
                                                 }

@@ -186,7 +186,8 @@ class RecommendationEngine(
         
         // 优先从可用照片中随机抽取
         val shuffledAvailable = availableImages.shuffled()
-        result.addAll(shuffledAvailable.take(batchSize))
+        val newlyPicked = shuffledAvailable.take(batchSize)
+        result.addAll(newlyPicked)
         
         // 如果可用照片不足，从冷却中的照片补充（优先选择冷却期即将结束的）
         if (result.size < batchSize && cooldownImages.isNotEmpty()) {
@@ -196,8 +197,8 @@ class RecommendationEngine(
             result.addAll(sortedCooldown.take(batchSize - result.size))
         }
         
-        // 批量记录这批照片被抽取
-        preferences.recordImagesPicked(result.map { it.id })
+        // 只记录新抽取的照片（不在冷却中的），避免重置从冷却中补充的照片的冷却期
+        preferences.recordImagesPicked(newlyPicked.map { it.id })
         
         return result
     }
