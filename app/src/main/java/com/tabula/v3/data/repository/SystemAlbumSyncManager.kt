@@ -655,11 +655,20 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
                 }
             }
             
+            // 修复：当 DATE_TAKEN 无效（为 0 或 null）时，使用 DATE_MODIFIED 作为替代
+            // 这样可以确保下载的照片、截屏等没有拍摄时间的图片也能保持正确的时间显示
+            // 注意：DATE_TAKEN 是毫秒，DATE_MODIFIED 是秒，需要转换
+            val effectiveDateTaken: Long = when {
+                dateTaken != null && dateTaken!! > 0 -> dateTaken!!
+                dateModified != null && dateModified!! > 0 -> dateModified!! * 1000  // 秒转毫秒
+                else -> System.currentTimeMillis()  // 最后的备选
+            }
+            
             val values = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
                 put(MediaStore.Images.Media.MIME_TYPE, getMimeType(fileName))
-                // 保留原始时间戳
-                dateTaken?.let { put(MediaStore.Images.Media.DATE_TAKEN, it) }
+                // 保留原始时间戳，使用有效的 DATE_TAKEN
+                put(MediaStore.Images.Media.DATE_TAKEN, effectiveDateTaken)
                 dateAdded?.let { put(MediaStore.Images.Media.DATE_ADDED, it) }
                 dateModified?.let { put(MediaStore.Images.Media.DATE_MODIFIED, it) }
                 put(MediaStore.Images.Media.RELATIVE_PATH, targetRelativePath)
@@ -685,6 +694,7 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
             val updateValues = ContentValues().apply {
                 put(MediaStore.Images.Media.IS_PENDING, 0)
                 // 再次设置时间戳，确保不被覆盖
+                put(MediaStore.Images.Media.DATE_TAKEN, effectiveDateTaken)
                 dateModified?.let { put(MediaStore.Images.Media.DATE_MODIFIED, it) }
             }
             contentResolver.update(newUri, updateValues, null, null)
@@ -1025,13 +1035,51 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
         fileName: String
     ): Uri? {
         try {
+            // 获取源图片的时间元数据，保持原始时间戳
+            var dateTaken: Long? = null
+            var dateAdded: Long? = null
+            var dateModified: Long? = null
+            contentResolver.query(
+                sourceUri,
+                arrayOf(
+                    MediaStore.Images.Media.DATE_TAKEN,
+                    MediaStore.Images.Media.DATE_ADDED,
+                    MediaStore.Images.Media.DATE_MODIFIED
+                ),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    cursor.getColumnIndex(MediaStore.Images.Media.DATE_TAKEN).takeIf { it >= 0 }?.let {
+                        dateTaken = cursor.getLong(it)
+                    }
+                    cursor.getColumnIndex(MediaStore.Images.Media.DATE_ADDED).takeIf { it >= 0 }?.let {
+                        dateAdded = cursor.getLong(it)
+                    }
+                    cursor.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED).takeIf { it >= 0 }?.let {
+                        dateModified = cursor.getLong(it)
+                    }
+                }
+            }
+            
+            // 当 DATE_TAKEN 无效时，使用 DATE_MODIFIED 作为替代
+            // DATE_TAKEN 是毫秒，DATE_MODIFIED 是秒
+            val effectiveDateTaken: Long = when {
+                dateTaken != null && dateTaken!! > 0 -> dateTaken!!
+                dateModified != null && dateModified!! > 0 -> dateModified!! * 1000
+                else -> System.currentTimeMillis()
+            }
+            
             val values = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
                 put(MediaStore.Images.Media.MIME_TYPE, getMimeType(fileName))
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.Images.Media.RELATIVE_PATH, targetRelativePath)
-                    put(MediaStore.Images.Media.IS_PENDING, 1)
-                }
+                put(MediaStore.Images.Media.RELATIVE_PATH, targetRelativePath)
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+                // 保留原始时间戳
+                put(MediaStore.Images.Media.DATE_TAKEN, effectiveDateTaken)
+                dateAdded?.let { put(MediaStore.Images.Media.DATE_ADDED, it) }
+                dateModified?.let { put(MediaStore.Images.Media.DATE_MODIFIED, it) }
             }
 
             val newUri = contentResolver.insert(
@@ -1045,12 +1093,13 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
                 }
             }
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val updateValues = ContentValues().apply {
-                    put(MediaStore.Images.Media.IS_PENDING, 0)
-                }
-                contentResolver.update(newUri, updateValues, null, null)
+            // 完成 pending 状态，并再次设置时间戳（防止被系统覆盖）
+            val updateValues = ContentValues().apply {
+                put(MediaStore.Images.Media.IS_PENDING, 0)
+                put(MediaStore.Images.Media.DATE_TAKEN, effectiveDateTaken)
+                dateModified?.let { put(MediaStore.Images.Media.DATE_MODIFIED, it) }
             }
+            contentResolver.update(newUri, updateValues, null, null)
 
             return newUri
         } catch (e: Exception) {

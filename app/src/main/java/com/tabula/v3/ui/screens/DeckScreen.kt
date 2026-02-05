@@ -59,6 +59,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -117,8 +118,10 @@ import com.tabula.v3.ui.components.AlbumSelectionSheet
 import com.tabula.v3.data.repository.AlbumCleanupEngine
 import com.tabula.v3.data.repository.AlbumCleanupInfo
 import com.tabula.v3.data.repository.AlbumCleanupBatch
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.DisposableEffect
 
 /**
  * Deck 屏幕状态
@@ -244,6 +247,12 @@ fun DeckScreen(
     var lastClassifiedIndex by remember { mutableIntStateOf(-1) }
     var lastClassifyWasSwipe by remember { mutableStateOf(false) }  // 是否是下滑归类
     
+    // ========== 删除撤销状态 ==========
+    // 记住最后一次删除（上滑移入回收站）操作的图片和位置
+    var lastDeletedImage by remember { mutableStateOf<ImageFile?>(null) }
+    var lastDeletedIndex by remember { mutableIntStateOf(-1) }
+    var isDeletePending by remember { mutableStateOf(false) }  // 是否有待确认的删除操作
+    
     // 下滑归类模式状态（用于隐藏底部切换按钮）
     var isClassifyMode by remember { mutableStateOf(false) }
     
@@ -279,6 +288,9 @@ fun DeckScreen(
     var selectedCleanupMonth by remember { mutableStateOf<MonthInfo?>(null) }
     var isMonthCleanupMode by remember { mutableStateOf(false) }  // 区分图集清理和月份清理
     
+    // 当前分析任务（用于取消快速切换时的旧任务）
+    var currentAnalysisJob by remember { mutableStateOf<Job?>(null) }
+    
     // 预加载的下一批（用于组切换时无缝衔接）
     var preloadedNextBatch by remember { mutableStateOf<AlbumCleanupBatch?>(null) }
     var isPreloadingNextBatch by remember { mutableStateOf(false) }
@@ -292,6 +304,21 @@ fun DeckScreen(
             kotlinx.coroutines.delay(500)  // 防抖延迟
             albumCleanupEngine.saveCheckpoint(currentCleanupBatch!!.groupIds, currentIndex)
             lastSavedIndex = currentIndex
+        }
+    }
+    
+    // 使用 rememberUpdatedState 捕获最新状态，避免 DisposableEffect 中访问过期值
+    val latestCleanupBatch by androidx.compose.runtime.rememberUpdatedState(currentCleanupBatch)
+    val latestIndex by androidx.compose.runtime.rememberUpdatedState(currentIndex)
+    val latestIsAlbumCleanupMode by androidx.compose.runtime.rememberUpdatedState(isAlbumCleanupMode)
+    
+    // 退出时强制保存断点（避免防抖机制导致最后一次保存丢失）
+    // 使用 Unit 作为 key，确保只在组件销毁时触发一次
+    DisposableEffect(Unit) {
+        onDispose {
+            if (latestIsAlbumCleanupMode && latestCleanupBatch != null && albumCleanupEngine != null) {
+                albumCleanupEngine.saveCheckpoint(latestCleanupBatch!!.groupIds, latestIndex)
+            }
         }
     }
     
@@ -330,7 +357,8 @@ fun DeckScreen(
         if (cleanupId == null || cleanupImages.isEmpty()) return@LaunchedEffect
         
         val remaining = (currentBatch.size - currentIndex - 1).coerceAtLeast(0)
-        if (remaining <= 3) {
+        // 【性能优化】更积极的预加载：从 ≤3 改成 ≤5，给预加载更多时间完成
+        if (remaining <= 5) {
             // 开始预加载下一批
             isPreloadingNextBatch = true
             
@@ -556,6 +584,69 @@ fun DeckScreen(
         }
     }
     
+    /**
+     * 处理图集/月份清理模式下的批次完成
+     * 
+     * 统一逻辑：标记组完成 → 清除断点 → 获取下一批 → 更新状态
+     * 
+     * 注意：此函数必须在协程中调用
+     */
+    suspend fun handleCleanupBatchCompletion() {
+        if (albumCleanupEngine == null || currentCleanupBatch == null) {
+            deckState = DeckState.COMPLETED
+            return
+        }
+        
+        // 标记当前批次的所有组为已处理
+        albumCleanupEngine.markGroupsProcessed(currentCleanupBatch!!.groupIds)
+        
+        // 获取当前清理的 ID 和图片列表（支持图集和月份两种模式）
+        val cleanupId = if (isMonthCleanupMode) selectedCleanupMonth?.cleanupAlbumId else selectedCleanupAlbum?.id
+        val cleanupImages = if (isMonthCleanupMode) {
+            selectedCleanupMonth?.images ?: emptyList()
+        } else {
+            selectedCleanupAlbum?.let { album ->
+                resolveAlbumCleanupImages(album, allImagesForCleanup)
+            } ?: emptyList()
+        }
+        
+        // 清除断点（组已完成，不需要恢复了）
+        cleanupId?.let { id ->
+            albumCleanupEngine.clearCheckpoint(id)
+        }
+        lastSavedIndex = -1
+        
+        // 更新剩余组数和照片数，获取下一批
+        if (cleanupId != null) {
+            albumCleanupRemainingGroups = albumCleanupEngine.getRemainingGroups(cleanupId)
+            albumCleanupRemainingImages = albumCleanupEngine.getRemainingImages(cleanupId)
+            
+            // 优先使用预加载的批次
+            val nextBatch = if (preloadedNextBatch != null) {
+                val batch = preloadedNextBatch
+                preloadedNextBatch = null  // 清空预加载
+                batch
+            } else {
+                // 没有预加载，实时获取
+                albumCleanupEngine.getNextBatch(cleanupId, cleanupImages)
+            }
+            
+            if (nextBatch != null) {
+                currentCleanupBatch = nextBatch
+                currentBatch = nextBatch.images
+                currentIndex = 0
+                markedCount = 0
+            } else {
+                // 清理完成
+                deckState = DeckState.COMPLETED
+                onRefreshAlbumCleanupInfos()
+            }
+        } else {
+            deckState = DeckState.COMPLETED
+            onRefreshAlbumCleanupInfos()
+        }
+    }
+    
     // 图集/月份清理模式：开始下一组（图集模式可能切换到其他图集，月份模式只继续当前月份）
     fun startNextCleanupBatch() {
         if (isLoadingNextBatch || albumCleanupEngine == null) return
@@ -759,6 +850,7 @@ fun DeckScreen(
                     // 浏览模式
                     val currentImage = currentBatch.getOrNull(currentIndex)
                     
+                    // 过滤掉隐藏的图集，用于下滑归类功能
                     DeckContent(
                         images = currentBatch,
                         currentIndex = currentIndex,
@@ -771,60 +863,14 @@ fun DeckScreen(
                         tagSelectionMode = tagSelectionMode,
                         tagsPerRow = tagsPerRow,
                         tagSwitchSpeed = tagSwitchSpeed,
-                        albums = albums,
+                        albums = albums.filter { !it.isHidden },
                         currentImageAlbumIds = currentImageAlbumIds,
                         onIndexChange = { newIndex ->
                             // 统一批次完成判断：索引超出范围或批次为空
                             if (newIndex >= currentBatch.size || currentBatch.isEmpty()) {
-                                // 图集清理模式：标记组完成并获取下一批
-                                if (isAlbumCleanupMode && albumCleanupEngine != null && currentCleanupBatch != null) {
-                                    scope.launch {
-                                        // 标记当前批次的所有组为已处理
-                                        albumCleanupEngine.markGroupsProcessed(currentCleanupBatch!!.groupIds)
-                                        
-                                        // 获取当前清理的 ID 和图片列表（支持图集和月份两种模式）
-                                        val cleanupId = if (isMonthCleanupMode) selectedCleanupMonth?.cleanupAlbumId else selectedCleanupAlbum?.id
-                                        val cleanupImages = if (isMonthCleanupMode) {
-                                            selectedCleanupMonth?.images ?: emptyList()
-                                        } else {
-                                            selectedCleanupAlbum?.let { album ->
-                                                resolveAlbumCleanupImages(album, allImagesForCleanup)
-                                            } ?: emptyList()
-                                        }
-                                        
-                                        // 清除断点（组已完成，不需要恢复了）
-                                        cleanupId?.let { id ->
-                                            albumCleanupEngine.clearCheckpoint(id)
-                                        }
-                                        lastSavedIndex = -1
-                                        
-                                        // 更新剩余组数和照片数
-                                        cleanupId?.let { id ->
-                                            albumCleanupRemainingGroups = albumCleanupEngine.getRemainingGroups(id)
-                                            albumCleanupRemainingImages = albumCleanupEngine.getRemainingImages(id)
-                                            
-                                            // 优先使用预加载的批次
-                                            val nextBatch = if (preloadedNextBatch != null) {
-                                                val batch = preloadedNextBatch
-                                                preloadedNextBatch = null  // 清空预加载
-                                                batch
-                                            } else {
-                                                // 没有预加载，实时获取
-                                                albumCleanupEngine.getNextBatch(id, cleanupImages)
-                                            }
-                                            
-                                            if (nextBatch != null) {
-                                                currentCleanupBatch = nextBatch
-                                                currentBatch = nextBatch.images
-                                                currentIndex = 0
-                                                markedCount = 0
-                                            } else {
-                                                // 清理完成
-                                                deckState = DeckState.COMPLETED
-                                                onRefreshAlbumCleanupInfos()
-                                            }
-                                        }
-                                    }
+                                // 图集清理模式：使用共用函数处理批次完成
+                                if (isAlbumCleanupMode) {
+                                    scope.launch { handleCleanupBatchCompletion() }
                                 } else {
                                     // 普通模式：进入完成页面
                                     // 不额外触发振动，CardStack 滑动时已触发过
@@ -843,7 +889,26 @@ fun DeckScreen(
                             }
                         },
                         onRemove = { image ->
-                            onRemove(image)
+                            // 如果已有待确认的删除操作，先提交它
+                            if (isDeletePending) {
+                                lastDeletedImage?.let { pendingImage ->
+                                    onRemove(pendingImage)
+                                }
+                                lastDeletedImage = null
+                                lastDeletedIndex = -1
+                                isDeletePending = false
+                            }
+                            
+                            // 记录撤销信息（在移除前记录索引位置）
+                            val imageIndex = currentBatch.indexOf(image)
+                            lastDeletedImage = image
+                            lastDeletedIndex = imageIndex
+                            isDeletePending = true
+                            
+                            // 显示撤销 Snackbar（延迟执行真正的删除）
+                            undoMessage = "已移入回收站"
+                            showUndoSnackbar = true
+                            
                             markedCount++
                             // 删除后如果没有剩余
                             val newBatch = currentBatch.toMutableList().apply { remove(image) }
@@ -854,55 +919,9 @@ fun DeckScreen(
                                 if (enableSwipeHaptics) {
                                     HapticFeedback.doubleTap(context)
                                 }
-                                // 图集/月份清理模式：标记组完成并获取下一批
-                                if (isAlbumCleanupMode && albumCleanupEngine != null && currentCleanupBatch != null) {
-                                    scope.launch {
-                                        // 标记当前批次的所有组为已处理
-                                        albumCleanupEngine.markGroupsProcessed(currentCleanupBatch!!.groupIds)
-                                        
-                                        // 获取当前清理的 ID 和图片列表（支持图集和月份两种模式）
-                                        val cleanupId = if (isMonthCleanupMode) selectedCleanupMonth?.cleanupAlbumId else selectedCleanupAlbum?.id
-                                        val cleanupImages = if (isMonthCleanupMode) {
-                                            selectedCleanupMonth?.images ?: emptyList()
-                                        } else {
-                                            selectedCleanupAlbum?.let { album ->
-                                                resolveAlbumCleanupImages(album, allImagesForCleanup)
-                                            } ?: emptyList()
-                                        }
-                                        
-                                        // 清除断点（组已完成，不需要恢复了）
-                                        cleanupId?.let { id ->
-                                            albumCleanupEngine.clearCheckpoint(id)
-                                        }
-                                        lastSavedIndex = -1
-                                        
-                                        // 更新剩余组数和照片数
-                                        cleanupId?.let { id ->
-                                            albumCleanupRemainingGroups = albumCleanupEngine.getRemainingGroups(id)
-                                            albumCleanupRemainingImages = albumCleanupEngine.getRemainingImages(id)
-                                            
-                                            // 优先使用预加载的批次
-                                            val nextBatchData = if (preloadedNextBatch != null) {
-                                                val batch = preloadedNextBatch
-                                                preloadedNextBatch = null  // 清空预加载
-                                                batch
-                                            } else {
-                                                // 没有预加载，实时获取
-                                                albumCleanupEngine.getNextBatch(id, cleanupImages)
-                                            }
-                                            
-                                            if (nextBatchData != null) {
-                                                currentCleanupBatch = nextBatchData
-                                                currentBatch = nextBatchData.images
-                                                currentIndex = 0
-                                                markedCount = 0
-                                            } else {
-                                                // 清理完成
-                                                deckState = DeckState.COMPLETED
-                                                onRefreshAlbumCleanupInfos()
-                                            }
-                                        }
-                                    }
+                                // 图集/月份清理模式：使用共用函数处理批次完成
+                                if (isAlbumCleanupMode) {
+                                    scope.launch { handleCleanupBatchCompletion() }
                                 } else {
                                     // 普通模式：进入完成页面
                                     deckState = DeckState.COMPLETED
@@ -916,6 +935,16 @@ fun DeckScreen(
                         onSettingsClick = onNavigateToSettings,
                         onAlbumClick = { album ->
                             currentImage?.let { image ->
+                                // 如果有待确认的删除操作，先提交它
+                                if (isDeletePending) {
+                                    lastDeletedImage?.let { pendingImage ->
+                                        onRemove(pendingImage)
+                                    }
+                                    lastDeletedImage = null
+                                    lastDeletedIndex = -1
+                                    isDeletePending = false
+                                }
+                                
                                 // 记录撤销信息
                                 lastClassifiedImage = image
                                 lastClassifiedIndex = currentIndex
@@ -941,6 +970,16 @@ fun DeckScreen(
                         // 下滑归类专用回调：使用回调传入的 image 而不是 currentImage
                         // 因为 Genie 动画的 onComplete 是异步的，currentImage 可能已经变化
                         onSwipeClassifyToAlbum = { image, album ->
+                            // 如果有待确认的删除操作，先提交它
+                            if (isDeletePending) {
+                                lastDeletedImage?.let { pendingImage ->
+                                    onRemove(pendingImage)
+                                }
+                                lastDeletedImage = null
+                                lastDeletedIndex = -1
+                                isDeletePending = false
+                            }
+                            
                             // 记录撤销信息（在移除前记录索引位置）
                             val imageIndex = currentBatch.indexOf(image)
                             lastClassifiedImage = image
@@ -961,55 +1000,9 @@ fun DeckScreen(
                                 if (enableSwipeHaptics) {
                                     HapticFeedback.doubleTap(context)
                                 }
-                                // 图集/月份清理模式：标记组完成并获取下一批
-                                if (isAlbumCleanupMode && albumCleanupEngine != null && currentCleanupBatch != null) {
-                                    scope.launch {
-                                        // 标记当前批次的所有组为已处理
-                                        albumCleanupEngine.markGroupsProcessed(currentCleanupBatch!!.groupIds)
-                                        
-                                        // 获取当前清理的 ID 和图片列表（支持图集和月份两种模式）
-                                        val cleanupId = if (isMonthCleanupMode) selectedCleanupMonth?.cleanupAlbumId else selectedCleanupAlbum?.id
-                                        val cleanupImages = if (isMonthCleanupMode) {
-                                            selectedCleanupMonth?.images ?: emptyList()
-                                        } else {
-                                            selectedCleanupAlbum?.let { cleanupAlbum ->
-                                                resolveAlbumCleanupImages(cleanupAlbum, allImagesForCleanup)
-                                            } ?: emptyList()
-                                        }
-                                        
-                                        // 清除断点（组已完成，不需要恢复了）
-                                        cleanupId?.let { id ->
-                                            albumCleanupEngine.clearCheckpoint(id)
-                                        }
-                                        lastSavedIndex = -1
-                                        
-                                        // 更新剩余组数和照片数
-                                        cleanupId?.let { id ->
-                                            albumCleanupRemainingGroups = albumCleanupEngine.getRemainingGroups(id)
-                                            albumCleanupRemainingImages = albumCleanupEngine.getRemainingImages(id)
-                                            
-                                            // 优先使用预加载的批次
-                                            val nextBatchData = if (preloadedNextBatch != null) {
-                                                val batch = preloadedNextBatch
-                                                preloadedNextBatch = null  // 清空预加载
-                                                batch
-                                            } else {
-                                                // 没有预加载，实时获取
-                                                albumCleanupEngine.getNextBatch(id, cleanupImages)
-                                            }
-                                            
-                                            if (nextBatchData != null) {
-                                                currentCleanupBatch = nextBatchData
-                                                currentBatch = nextBatchData.images
-                                                currentIndex = 0
-                                                markedCount = 0
-                                            } else {
-                                                // 清理完成
-                                                deckState = DeckState.COMPLETED
-                                                onRefreshAlbumCleanupInfos()
-                                            }
-                                        }
-                                    }
+                                // 图集/月份清理模式：使用共用函数处理批次完成
+                                if (isAlbumCleanupMode) {
+                                    scope.launch { handleCleanupBatchCompletion() }
                                 } else {
                                     // 普通模式：进入完成页面
                                     deckState = DeckState.COMPLETED
@@ -1155,72 +1148,132 @@ fun DeckScreen(
             )
         }
 
-        // 撤销 Snackbar
+        // 撤销 Snackbar（支持归档撤销和删除撤销）
         UndoSnackbar(
             visible = showUndoSnackbar,
             message = undoMessage,
             onUndo = {
-                // 执行数据层撤销（取消待执行的归档操作）
-                onUndoAlbumAction()
-                
-                // 恢复 UI 状态
-                lastClassifiedImage?.let { image ->
-                    // 检查图片是否已在批次中（防止重复插入）
-                    val isDuplicate = currentBatch.any { it.id == image.id }
-                    
-                    if (lastClassifyWasSwipe && !isDuplicate) {
-                        // 下滑归类：将图片重新插入 batch
-                        val newBatch = currentBatch.toMutableList()
-                        // 使用安全的插入索引：如果原索引仍有效则使用，否则插入到当前位置
-                        val insertIndex = if (lastClassifiedIndex >= 0 && lastClassifiedIndex <= newBatch.size) {
-                            lastClassifiedIndex
-                        } else {
-                            // 原索引无效，插入到当前位置或末尾
-                            currentIndex.coerceIn(0, newBatch.size)
-                        }
-                        newBatch.add(insertIndex, image)
-                        currentBatch = newBatch
-                        currentIndex = insertIndex
-                        // 如果之前进入了完成状态，恢复浏览状态
-                        if (deckState == DeckState.COMPLETED) {
-                            deckState = DeckState.BROWSING
-                        }
-                    } else if (!lastClassifyWasSwipe) {
-                        // 点击 Chip 归类：回退索引
-                        if (currentIndex > 0 && currentIndex > lastClassifiedIndex) {
-                            currentIndex = lastClassifiedIndex
+                if (isDeletePending) {
+                    // ========== 删除撤销 ==========
+                    lastDeletedImage?.let { image ->
+                        // 检查图片是否已在批次中（防止重复插入）
+                        val isDuplicate = currentBatch.any { it.id == image.id }
+                        
+                        if (!isDuplicate) {
+                            // 将图片重新插入 batch
+                            val newBatch = currentBatch.toMutableList()
+                            // 使用安全的插入索引：如果原索引仍有效则使用，否则插入到当前位置
+                            val insertIndex = if (lastDeletedIndex >= 0 && lastDeletedIndex <= newBatch.size) {
+                                lastDeletedIndex
+                            } else {
+                                // 原索引无效，插入到当前位置或末尾
+                                currentIndex.coerceIn(0, newBatch.size)
+                            }
+                            newBatch.add(insertIndex, image)
+                            currentBatch = newBatch
+                            currentIndex = insertIndex
+                            // 减少删除计数（因为撤销了）
+                            markedCount = (markedCount - 1).coerceAtLeast(0)
+                            // 如果之前进入了完成状态，恢复浏览状态
+                            if (deckState == DeckState.COMPLETED) {
+                                deckState = DeckState.BROWSING
+                            }
                         }
                     }
+                    
+                    // 清理删除撤销状态
+                    lastDeletedImage = null
+                    lastDeletedIndex = -1
+                    isDeletePending = false
+                } else {
+                    // ========== 归档撤销 ==========
+                    // 执行数据层撤销（取消待执行的归档操作）
+                    onUndoAlbumAction()
+                    
+                    // 恢复 UI 状态
+                    lastClassifiedImage?.let { image ->
+                        // 检查图片是否已在批次中（防止重复插入）
+                        val isDuplicate = currentBatch.any { it.id == image.id }
+                        
+                        if (lastClassifyWasSwipe && !isDuplicate) {
+                            // 下滑归类：将图片重新插入 batch
+                            val newBatch = currentBatch.toMutableList()
+                            // 使用安全的插入索引：如果原索引仍有效则使用，否则插入到当前位置
+                            val insertIndex = if (lastClassifiedIndex >= 0 && lastClassifiedIndex <= newBatch.size) {
+                                lastClassifiedIndex
+                            } else {
+                                // 原索引无效，插入到当前位置或末尾
+                                currentIndex.coerceIn(0, newBatch.size)
+                            }
+                            newBatch.add(insertIndex, image)
+                            currentBatch = newBatch
+                            currentIndex = insertIndex
+                            // 如果之前进入了完成状态，恢复浏览状态
+                            if (deckState == DeckState.COMPLETED) {
+                                deckState = DeckState.BROWSING
+                            }
+                        } else if (!lastClassifyWasSwipe) {
+                            // 点击 Chip 归类：回退索引
+                            if (currentIndex > 0 && currentIndex > lastClassifiedIndex) {
+                                currentIndex = lastClassifiedIndex
+                            }
+                        }
+                    }
+                    
+                    // 清理归档撤销状态
+                    lastClassifiedImage = null
+                    lastClassifiedIndex = -1
                 }
-                
-                // 清理撤销状态
-                lastClassifiedImage = null
-                lastClassifiedIndex = -1
                 showUndoSnackbar = false
             },
             onDismiss = { 
-                // Snackbar 超时消失 = 用户确认归档
-                // 执行真正的复制操作
-                onCommitArchive()
-                
-                // 清理撤销状态
-                lastClassifiedImage = null
-                lastClassifiedIndex = -1
+                if (isDeletePending) {
+                    // ========== 确认删除 ==========
+                    // Snackbar 超时消失 = 用户确认删除
+                    // 执行真正的删除操作
+                    lastDeletedImage?.let { image ->
+                        onRemove(image)
+                    }
+                    
+                    // 清理删除撤销状态
+                    lastDeletedImage = null
+                    lastDeletedIndex = -1
+                    isDeletePending = false
+                } else {
+                    // ========== 确认归档 ==========
+                    // Snackbar 超时消失 = 用户确认归档
+                    // 执行真正的复制操作
+                    onCommitArchive()
+                    
+                    // 清理归档撤销状态
+                    lastClassifiedImage = null
+                    lastClassifiedIndex = -1
+                }
                 showUndoSnackbar = false 
             },
             modifier = Modifier.align(Alignment.BottomCenter)
         )
     }
 
-    // LIST_POPUP 模式：图集选择弹层
+    // LIST_POPUP 模式：图集选择弹层（过滤掉隐藏的图集）
     if (showAlbumSelectionSheet) {
         val currentImage = currentBatch.getOrNull(currentIndex)
         AlbumSelectionSheet(
-            albums = albums,
+            albums = albums.filter { !it.isHidden },
             allImages = allImages,
             onAlbumSelected = { album ->
                 showAlbumSelectionSheet = false
                 currentImage?.let { image ->
+                    // 如果有待确认的删除操作，先提交它
+                    if (isDeletePending) {
+                        lastDeletedImage?.let { pendingImage ->
+                            onRemove(pendingImage)
+                        }
+                        lastDeletedImage = null
+                        lastDeletedIndex = -1
+                        isDeletePending = false
+                    }
+                    
                     // 记录撤销信息
                     lastClassifiedImage = image
                     lastClassifiedIndex = currentIndex
@@ -1263,6 +1316,16 @@ fun DeckScreen(
             onConfirm = { name, color, emoji ->
                 val pending = pendingClassifyImage
                 if (pending != null) {
+                    // 如果有待确认的删除操作，先提交它
+                    if (isDeletePending) {
+                        lastDeletedImage?.let { pendingImage ->
+                            onRemove(pendingImage)
+                        }
+                        lastDeletedImage = null
+                        lastDeletedIndex = -1
+                        isDeletePending = false
+                    }
+                    
                     // 有待归档的图片，创建图集后自动归档
                     onCreateAlbumAndClassify(name, color, emoji, pending)
                     pendingClassifyImage = null
@@ -1301,11 +1364,17 @@ fun DeckScreen(
     fun startAlbumCleanup(album: Album, forceReset: Boolean = false) {
         val engine = albumCleanupEngine ?: return  // 确保 engine 非空
         
+        // 取消之前的分析任务（避免快速切换时状态混乱）
+        currentAnalysisJob?.cancel()
+        
         // 重置月份清理模式标识（确保是图集清理模式）
         isMonthCleanupMode = false
         selectedCleanupMonth = null
         
-        scope.launch {
+        // 记录当前选中的 albumId，用于在协程中校验
+        val targetAlbumId = album.id
+        
+        currentAnalysisJob = scope.launch {
             analyzingAlbumId = album.id
             analysisProgress = 0f
             
@@ -1395,7 +1464,10 @@ fun DeckScreen(
     fun startMonthCleanup(monthInfo: MonthInfo, forceReset: Boolean = false) {
         val engine = albumCleanupEngine ?: return
         
-        scope.launch {
+        // 取消之前的分析任务（避免快速切换时状态混乱）
+        currentAnalysisJob?.cancel()
+        
+        currentAnalysisJob = scope.launch {
             val virtualAlbum = monthInfo.toVirtualAlbum()
             val albumId = virtualAlbum.id
             
@@ -1542,6 +1614,11 @@ fun DeckScreen(
                 selectedCleanupMonth?.let { month ->
                     startMonthCleanup(month, forceReset = false)
                 }
+            },
+            onResetAndStartMonthCleanup = { month ->
+                // 重置并重新开始月份清理（用于已完成的月份）
+                selectedCleanupMonth = month
+                startMonthCleanup(month, forceReset = true)
             }
         )
     }
@@ -1608,7 +1685,8 @@ private fun DeckContent(
     var selectedAlbumIndex by remember(albums) { mutableIntStateOf(if (albums.isNotEmpty()) 1 else 0) }
     
     // 标签位置映射（索引 -> TagPosition）
-    var tagPositions by remember { mutableStateOf<Map<Int, TagPosition>>(emptyMap()) }
+    // 使用 mutableStateMapOf 代替 mutableStateOf<Map>，避免每次更新单个标签位置时触发整体重组
+    val tagPositions = remember { mutableStateMapOf<Int, TagPosition>() }
     
     // 回收站按钮位置（用于上滑删除的 Genie 动画目标点）
     var trashButtonBounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
@@ -1650,11 +1728,13 @@ private fun DeckContent(
             )
 
             // 卡片堆叠区域
+            // 固定标签模式下有双行标签，卡片位置较高；其他模式卡片可以更靠下
+            val cardTopPadding = if (tagSelectionMode == TagSelectionMode.FIXED_TAP) 32.dp else 48.dp
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .padding(top = 16.dp),  // 卡片向下移动
+                    .padding(top = cardTopPadding),  // 卡片向下移动
                 contentAlignment = Alignment.Center
             ) {
                 if (images.isNotEmpty() && currentIndex < images.size) {
@@ -1724,7 +1804,7 @@ private fun DeckContent(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(140.dp) // 固定高度
+                    .height(180.dp) // 固定高度（增加高度以避免标签被遮挡）
             ) {
                 // ========== 模式一：下滑自动选择 ==========
                 if (tagSelectionMode == TagSelectionMode.SWIPE_AUTO) {
@@ -1735,60 +1815,82 @@ private fun DeckContent(
                         exit = androidx.compose.animation.fadeOut()
                     ) {
                         Column(
-                            modifier = Modifier.fillMaxSize()
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.Bottom,
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 8.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                // 卡片下方统一显示当前批次剩余张数
-                                // 图集清理模式的组数信息已在左上角TopBar显示
-                                val statusText = if (isAlbumCleanupMode) {
-                                    "这一组还剩 $remaining 张照片"
-                                } else {
-                                    "${remaining} 张待整理"
-                                }
-                                Text(
-                                    text = statusText,
-                                    style = MaterialTheme.typography.labelMedium.copy(
-                                        letterSpacing = 2.sp,
-                                        fontWeight = FontWeight.Medium
-                                    ),
-                                    color = textColor.copy(alpha = 0.5f),
-                                    fontSize = 12.sp
-                                )
+                            // 卡片下方统一显示当前批次剩余张数
+                            // 图集清理模式的组数信息已在左上角TopBar显示
+                            val statusText = if (isAlbumCleanupMode) {
+                                "这一组还剩 $remaining 张照片"
+                            } else {
+                                "${remaining} 张待整理"
                             }
-
-                            // 底部留白，为模式切换按钮预留空间
-                            Spacer(modifier = Modifier.height(80.dp))
+                            Text(
+                                text = statusText,
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    letterSpacing = 2.sp,
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                color = textColor.copy(alpha = 0.5f),
+                                fontSize = 12.sp
+                            )
+                            // 底部留白，为切换按钮预留空间
+                            Spacer(modifier = Modifier.height(96.dp))
                         }
                     }
                     
                     // 归类模式：显示标签选择器
-                    // 只在归类模式下渲染 AlbumDropTarget，避免 FrostedGlass 在 alpha=0 时的视觉残留
-                    if (isClassifyMode) {
-                        androidx.compose.animation.AnimatedVisibility(
-                            visible = true,
-                            enter = androidx.compose.animation.fadeIn(
-                                animationSpec = androidx.compose.animation.core.tween(200)
-                            ),
-                            exit = androidx.compose.animation.fadeOut(
-                                animationSpec = androidx.compose.animation.core.tween(200)
+                    // 使用 AnimatedVisibility 控制整个显示/隐藏，确保退出动画能正常执行
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = isClassifyMode,
+                        enter = androidx.compose.animation.fadeIn(
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 250,
+                                easing = androidx.compose.animation.core.FastOutSlowInEasing
                             )
-                        ) {
+                        ) + androidx.compose.animation.slideInVertically(
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 300,
+                                easing = androidx.compose.animation.core.FastOutSlowInEasing
+                            ),
+                            initialOffsetY = { it / 2 }  // 从下方滑入
+                        ) + androidx.compose.animation.scaleIn(
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 250,
+                                easing = androidx.compose.animation.core.FastOutSlowInEasing
+                            ),
+                            initialScale = 0.92f
+                        ),
+                        exit = androidx.compose.animation.fadeOut(
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 200,
+                                easing = androidx.compose.animation.core.FastOutLinearInEasing
+                            )
+                        ) + androidx.compose.animation.slideOutVertically(
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 250,
+                                easing = androidx.compose.animation.core.FastOutLinearInEasing
+                            ),
+                            targetOffsetY = { it / 3 }  // 向下滑出
+                        ) + androidx.compose.animation.scaleOut(
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 200,
+                                easing = androidx.compose.animation.core.FastOutLinearInEasing
+                            ),
+                            targetScale = 0.95f
+                        )
+                    ) {
                         AlbumDropTarget(
                             albums = albums,
                             selectedIndex = selectedAlbumIndex,
                             onTagPositionChanged = { index, tagPosition ->
-                                // 更新标签位置映射
-                                tagPositions = tagPositions + (index to tagPosition)
+                                // 直接更新 Map，mutableStateMapOf 只会触发依赖该 key 的重组
+                                tagPositions[index] = tagPosition
                             },
                             modifier = Modifier.fillMaxWidth(),
                             tagsPerRow = tagsPerRow
                         )
-                        }
                     }
                 }
                 
@@ -1821,13 +1923,14 @@ private fun DeckContent(
                             )
                         }
                         
-                        // 固定标签栏
+                        // 固定标签栏（过滤掉隐藏的图集）
+                        val visibleAlbums = albums.filter { !it.isHidden }
                         FixedTagBar(
-                            albums = albums,
+                            albums = visibleAlbums,
                             onAlbumClick = { album ->
                                 currentImage?.let { image ->
-                                    // 找到相册在 albums 列表中的索引（+1 因为索引0是新建按钮）
-                                    val albumIndex = albums.indexOf(album) + 1
+                                    // 找到相册在可见列表中的索引（+1 因为索引0是新建按钮）
+                                    val albumIndex = visibleAlbums.indexOf(album) + 1
                                     // 设置待归类的相册和触发索引
                                     pendingFixedTagAlbum = album
                                     fixedTagTriggerIndex = albumIndex
@@ -1837,8 +1940,8 @@ private fun DeckContent(
                                 onAddAlbumClick(currentImage)
                             },
                             onTagPositionChanged = { index, tagPosition ->
-                                // 更新标签位置映射（用于 Genie 动画目标点）
-                                tagPositions = tagPositions + (index to tagPosition)
+                                // 直接更新 Map，mutableStateMapOf 只会触发依赖该 key 的重组
+                                tagPositions[index] = tagPosition
                             },
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -1851,44 +1954,34 @@ private fun DeckContent(
                 // ========== 模式三：弹层列表选择 ==========
                 if (tagSelectionMode == TagSelectionMode.LIST_POPUP) {
                     Column(
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Bottom,
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         // 剩余提示 + 下滑归类提示
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 8.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                val statusText = if (isAlbumCleanupMode) {
-                                    "这一组还剩 $remaining 张照片"
-                                } else {
-                                    "${remaining} 张待整理"
-                                }
-                                Text(
-                                    text = statusText,
-                                    style = MaterialTheme.typography.labelMedium.copy(
-                                        letterSpacing = 2.sp,
-                                        fontWeight = FontWeight.Medium
-                                    ),
-                                    color = textColor.copy(alpha = 0.5f),
-                                    fontSize = 12.sp
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "↓ 下滑选择图集",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = textColor.copy(alpha = 0.35f),
-                                    fontSize = 11.sp
-                                )
-                            }
+                        val statusText = if (isAlbumCleanupMode) {
+                            "这一组还剩 $remaining 张照片"
+                        } else {
+                            "${remaining} 张待整理"
                         }
-                        
-                        // 底部留白，为模式切换按钮预留空间
-                        Spacer(modifier = Modifier.weight(1f))
+                        Text(
+                            text = statusText,
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                letterSpacing = 2.sp,
+                                fontWeight = FontWeight.Medium
+                            ),
+                            color = textColor.copy(alpha = 0.5f),
+                            fontSize = 12.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "↓ 下滑选择图集",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = textColor.copy(alpha = 0.35f),
+                            fontSize = 11.sp
+                        )
+                        // 底部留白，为切换按钮预留空间
+                        Spacer(modifier = Modifier.height(96.dp))
                     }
                 }
             }

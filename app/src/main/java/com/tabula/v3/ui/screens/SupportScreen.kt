@@ -224,34 +224,6 @@ fun SupportScreen(
                             lineHeight = 24.sp
                         )
                         
-                        Spacer(modifier = Modifier.height(16.dp))
-                        
-                        // 分隔线
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(1.dp)
-                                .background(secondaryTextColor.copy(alpha = 0.2f))
-                        )
-                        
-                        Spacer(modifier = Modifier.height(16.dp))
-                        
-                        Text(
-                            text = "🏆 贡献名单",
-                            style = MaterialTheme.typography.titleSmall.copy(
-                                fontWeight = FontWeight.SemiBold
-                            ),
-                            color = textColor
-                        )
-                        
-                        Spacer(modifier = Modifier.height(8.dp))
-                        
-                        Text(
-                            text = "后续更新将推出类似 GitHub 的感谢名单。无论是提交建议还是长期支持 Tabula 的用户，都会被记录在此，以表感谢！",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = secondaryTextColor,
-                            lineHeight = 20.sp
-                        )
                     }
                 }
                 
@@ -361,6 +333,57 @@ fun SupportScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = secondaryTextColor,
                             textAlign = TextAlign.Center
+                        )
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(20.dp))
+                
+                // 感谢名单卡片
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = cardColor),
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp)
+                    ) {
+                        Text(
+                            text = "🙏 感谢名单",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = textColor
+                        )
+                        
+                        Spacer(modifier = Modifier.height(12.dp))
+                        
+                        Text(
+                            text = "感谢以下用户对 Tabula 的支持与贡献：",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = secondaryTextColor,
+                            lineHeight = 22.sp
+                        )
+                        
+                        Spacer(modifier = Modifier.height(12.dp))
+                        
+                        Text(
+                            text = "@Summer_233  @WIdei  @柴郡  @k",
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontWeight = FontWeight.Medium
+                            ),
+                            color = accentColor,
+                            lineHeight = 24.sp
+                        )
+                        
+                        Spacer(modifier = Modifier.height(12.dp))
+                        
+                        Text(
+                            text = "无论是提交建议还是长期支持 Tabula 的用户，都会被记录在此，以表感谢！",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = secondaryTextColor.copy(alpha = 0.8f),
+                            lineHeight = 20.sp
                         )
                     }
                 }

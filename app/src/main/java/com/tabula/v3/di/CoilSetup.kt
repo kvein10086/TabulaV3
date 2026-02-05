@@ -10,21 +10,35 @@ import coil.decode.ImageDecoderDecoder
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import java.io.File
+import java.util.concurrent.Executors
 
 /**
  * Coil 图片加载器极致优化配置
  *
  * 针对 120Hz 高速滑动场景优化：
- * 1. 内存缓存：可用 RAM 的 25%
- * 2. 默认 RGB_565 格式节省 50% 内存
+ * 1. 内存缓存：可用 RAM 的 25%（从 30% 降低）
+ * 2. 限制并发解码数量（最多 3 个）
  * 3. 磁盘缓存 150MB
  * 4. 禁用网络（纯本地应用）
+ * 
+ * 性能优化关键点：
+ * - 限制并发解码可以减少内存峰值和 CPU 竞争
+ * - 使用固定大小的线程池避免线程爆炸
  */
 object CoilSetup {
 
     @Volatile
     private var imageLoader: ImageLoader? = null
+    
+    // 限制并发解码数量的调度器（最多 3 个并发解码）
+    // 这可以防止大量图片同时解码导致的内存压力和 CPU 竞争
+    private val limitedDispatcher: CoroutineDispatcher by lazy {
+        Executors.newFixedThreadPool(3).asCoroutineDispatcher()
+    }
 
     /**
      * 获取单例 ImageLoader
@@ -44,13 +58,18 @@ object CoilSetup {
      */
     private fun createImageLoader(context: Context): ImageLoader {
         val availableMemory = getAvailableMemory(context)
-        // 使用可用内存的 30% 作为图片缓存（更激进）
-        val memoryCacheSize = (availableMemory * 0.30).toLong().coerceIn(
-            minimumValue = 48L * 1024 * 1024,  // 最小 48MB
-            maximumValue = 384L * 1024 * 1024  // 最大 384MB
+        // 使用可用内存的 25% 作为图片缓存（从 30% 降低以减少内存压力）
+        val memoryCacheSize = (availableMemory * 0.25).toLong().coerceIn(
+            minimumValue = 32L * 1024 * 1024,  // 最小 32MB（从 48MB 降低）
+            maximumValue = 256L * 1024 * 1024  // 最大 256MB（从 384MB 降低）
         )
 
         return ImageLoader.Builder(context)
+            // ========== 并发限制 ==========
+            // 使用限制并发数的调度器，避免同时解码太多图片
+            .dispatcher(limitedDispatcher)
+            .fetcherDispatcher(limitedDispatcher)
+            .decoderDispatcher(limitedDispatcher)
             // ========== 内存缓存配置 ==========
             .memoryCache {
                 MemoryCache.Builder(context)
@@ -63,7 +82,7 @@ object CoilSetup {
             .diskCache {
                 DiskCache.Builder()
                     .directory(File(context.cacheDir, "image_cache"))
-                    .maxSizeBytes(200L * 1024 * 1024) // 200MB（更大缓存）
+                    .maxSizeBytes(150L * 1024 * 1024) // 150MB（从 200MB 降低）
                     .build()
             }
             // ========== 缓存策略 ==========

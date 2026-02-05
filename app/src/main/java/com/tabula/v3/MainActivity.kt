@@ -88,6 +88,9 @@ import com.tabula.v3.ui.screens.AlbumViewScreen
 import com.tabula.v3.ui.screens.SystemAlbumViewScreen
 import com.tabula.v3.ui.screens.OnboardingScreen
 import com.tabula.v3.ui.screens.PersonalizationScreen
+import com.tabula.v3.ui.screens.HiddenAlbumsScreen
+import com.tabula.v3.ui.screens.PrivacyPolicyScreen
+import com.tabula.v3.ui.screens.TutorialScreen
 import com.tabula.v3.data.repository.AlbumManager
 import com.tabula.v3.data.model.Album
 import androidx.compose.runtime.collectAsState
@@ -342,6 +345,8 @@ fun TabulaApp(
     val albumCleanupEngine = remember { AlbumCleanupEngine.getInstance(context) }
     val albums by albumManager.albums.collectAsState()
     val albumMappings by albumManager.mappings.collectAsState()
+    val excludedAlbumCount by albumManager.excludedAlbumCount.collectAsState()
+    val hiddenAlbumCount by albumManager.hiddenAlbumCount.collectAsState()
     
     // ========== 图集清理状态 ==========
     var albumCleanupInfos by remember { mutableStateOf<List<AlbumCleanupInfo>>(emptyList()) }
@@ -869,7 +874,19 @@ fun TabulaApp(
             onNavigateToLab = { currentScreen = AppScreen.LAB },
             onNavigateToSupport = { currentScreen = AppScreen.SUPPORT },
             onNavigateToReminderSettings = { currentScreen = AppScreen.REMINDER_SETTINGS },
+            excludedAlbumCount = excludedAlbumCount,
+            hiddenAlbumCount = hiddenAlbumCount,
+            onNavigateToHiddenAlbums = { currentScreen = AppScreen.HIDDEN_ALBUMS },
+            onNavigateToPrivacyPolicy = { currentScreen = AppScreen.PRIVACY_POLICY },
+            onNavigateToTutorial = { currentScreen = AppScreen.TUTORIAL },
             scrollState = settingsScrollState
+        )
+    }
+    
+    // 使用教程页面
+    val tutorialContent: @Composable () -> Unit = {
+        TutorialScreen(
+            onNavigateBack = { currentScreen = AppScreen.SETTINGS }
         )
     }
 
@@ -969,6 +986,42 @@ fun TabulaApp(
                 val message = if (strategy == SourceImageDeletionStrategy.ASK_EVERY_TIME) "归档提醒已开启" else "归档提醒已关闭"
                 Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             },
+            onNavigateBack = { currentScreen = AppScreen.SETTINGS }
+        )
+    }
+    
+    // 隐藏与屏蔽图集管理页面
+    val hiddenAlbumsContent: @Composable () -> Unit = {
+        // 使用 count 作为 key 触发列表刷新，实现响应式更新
+        val currentHiddenAlbums = remember(hiddenAlbumCount) { 
+            albumManager.getHiddenAlbums() 
+        }
+        val currentExcludedAlbums = remember(excludedAlbumCount) { 
+            albumManager.getExcludedAlbums() 
+        }
+        
+        HiddenAlbumsScreen(
+            hiddenAlbums = currentHiddenAlbums,
+            excludedAlbums = currentExcludedAlbums,
+            onUnhideAlbum = { albumId ->
+                scope.launch {
+                    albumManager.unhideAlbum(albumId)
+                    Toast.makeText(context, "已取消隐藏", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onUnexcludeAlbum = { albumId ->
+                scope.launch {
+                    albumManager.setAlbumExcludedFromRecommend(albumId, false)
+                    Toast.makeText(context, "已取消屏蔽", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onNavigateBack = { currentScreen = AppScreen.SETTINGS }
+        )
+    }
+    
+    // 隐私政策页面
+    val privacyPolicyContent: @Composable () -> Unit = {
+        PrivacyPolicyScreen(
             onNavigateBack = { currentScreen = AppScreen.SETTINGS }
         )
     }
@@ -1113,6 +1166,25 @@ fun TabulaApp(
                 scope.launch {
                     albumManager.copyImagesToAlbum(imageIds, targetAlbumId)
                 }
+            },
+            onDeleteImages = { imageIds ->
+                // 找到对应的 ImageFile
+                val imagesToDelete = allImages.filter { it.id in imageIds }
+                if (imagesToDelete.isNotEmpty()) {
+                    // 执行永久删除操作
+                    performDeleteBatch(imagesToDelete) { success ->
+                        if (success) {
+                            // 从 allImages 中移除
+                            val deletedIds = imagesToDelete.map { it.id }.toSet()
+                            allImages = allImages.filter { it.id !in deletedIds }
+                            imagesForSorting = imagesForSorting.filter { it.id !in deletedIds }
+                            
+                            Toast.makeText(context, "已永久删除 ${imagesToDelete.size} 张图片", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "删除失败", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
             }
         )
     }
@@ -1204,6 +1276,9 @@ fun TabulaApp(
         AppScreen.DISPLAY_SETTINGS -> settingsContent to displaySettingsContent
         AppScreen.LAB -> settingsContent to labContent
         AppScreen.REMINDER_SETTINGS -> settingsContent to reminderSettingsContent
+        AppScreen.HIDDEN_ALBUMS -> settingsContent to hiddenAlbumsContent
+        AppScreen.PRIVACY_POLICY -> settingsContent to privacyPolicyContent
+        AppScreen.TUTORIAL -> settingsContent to tutorialContent
     }
     
     // ========== 渲染容器 ==========
@@ -1227,6 +1302,9 @@ fun TabulaApp(
                     AppScreen.DISPLAY_SETTINGS -> AppScreen.SETTINGS
                     AppScreen.LAB -> AppScreen.SETTINGS
                     AppScreen.REMINDER_SETTINGS -> AppScreen.SETTINGS
+                    AppScreen.HIDDEN_ALBUMS -> AppScreen.SETTINGS
+                    AppScreen.PRIVACY_POLICY -> AppScreen.SETTINGS
+                    AppScreen.TUTORIAL -> AppScreen.SETTINGS
                     AppScreen.DECK -> AppScreen.DECK
                 }
             },

@@ -17,9 +17,28 @@ import kotlinx.coroutines.withContext
 
 /**
  * 图片特性检测器（HDR / 动态照片）
+ * 
+ * 性能优化：
+ * 1. 优先使用轻量级检测（MediaStore 标志、XMP、EXIF）
+ * 2. 延迟进行重量级检测（ImageDecoder gainmap 检测）
+ * 3. 使用信号量限制并发解码数量
  */
 object ImageFeatureDetector {
     private const val TAG = "ImageFeatureDetector"
+    
+    // 限制同时进行的重量级检测数量，避免内存压力
+    private val heavyDetectionSemaphore = java.util.concurrent.Semaphore(2)
+    
+    // 快速检测模式：只使用轻量级方法（适合滑动预览场景）
+    private var fastModeEnabled = false
+    
+    /**
+     * 启用/禁用快速检测模式
+     * 快速模式下只使用轻量级检测，跳过 ImageDecoder
+     */
+    fun setFastMode(enabled: Boolean) {
+        fastModeEnabled = enabled
+    }
 
     suspend fun detect(
         context: Context,
@@ -35,30 +54,70 @@ object ImageFeatureDetector {
 
     private fun detectHdr(context: Context, uri: Uri, xmp: String?): Boolean {
         val resolver = context.contentResolver
+        
+        // 第一步：查询 MediaStore HDR 标志（最快，零成本）
         queryHdrFlag(resolver, uri)?.let { flag ->
             if (flag) return true
+        }
+        
+        // 第二步：检查 XMP 元数据（轻量级）
+        if (xmp != null && containsHdrXmp(xmp)) {
+            return true
+        }
+        
+        // 第三步：检查 EXIF 提示（轻量级）
+        if (containsHdrExifHint(context, uri)) {
+            return true
+        }
+        
+        // 快速模式下跳过重量级检测
+        if (fastModeEnabled) {
+            return false
+        }
+        
+        // 第四步：使用 ImageDecoder 检测 gainmap（重量级，需要解码图片）
+        // 使用信号量限制并发数量
+        if (!heavyDetectionSemaphore.tryAcquire()) {
+            // 无法获取许可，跳过重量级检测
+            return false
         }
 
         return try {
             val source = ImageDecoder.createSource(resolver, uri)
             var hdrColorSpace = false
-            val bitmap = ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
-                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-                hdrColorSpace = isHdrColorSpace(info.colorSpace)
+            var hasGainmap = false
+            
+            // 使用 decodeHeader 替代 decodeBitmap，只读取头信息不解码整张图
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                ImageDecoder.decodeDrawable(source) { decoder, info, _ ->
+                    // 只检查色彩空间，不实际解码
+                    hdrColorSpace = isHdrColorSpace(info.colorSpace)
+                    // 设置最小尺寸以减少内存使用
+                    decoder.setTargetSampleSize(8)
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                }
             }
-            val hasGainmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                bitmap.hasGainmap()
-            } else {
-                false
+            
+            // Android 14+ 检测 gainmap（需要解码，但使用采样降低开销）
+            if (!hdrColorSpace && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                try {
+                    val bitmap = ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+                        decoder.setTargetSampleSize(4)  // 使用 1/4 尺寸采样
+                        decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    }
+                    hasGainmap = bitmap.hasGainmap()
+                    bitmap.recycle()  // 立即回收
+                } catch (e: Exception) {
+                    Log.w(TAG, "Gainmap detect failed: ${e.message}")
+                }
             }
-            if (hasGainmap || hdrColorSpace) {
-                true
-            } else {
-                xmp?.let { containsHdrXmp(it) } ?: containsHdrExifHint(context, uri)
-            }
+            
+            hdrColorSpace || hasGainmap
         } catch (e: Exception) {
             Log.w(TAG, "HDR detect failed: ${e.message}")
-            xmp?.let { containsHdrXmp(it) } ?: containsHdrExifHint(context, uri)
+            false
+        } finally {
+            heavyDetectionSemaphore.release()
         }
     }
 

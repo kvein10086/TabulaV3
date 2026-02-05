@@ -54,6 +54,7 @@ import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DriveFileMove
 import androidx.compose.material.icons.rounded.FileCopy
 import androidx.compose.material.icons.rounded.MoreVert
@@ -67,6 +68,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.isActive
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -81,6 +83,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -103,7 +106,11 @@ import com.tabula.v3.ui.components.SourceRect
 import com.tabula.v3.ui.components.SwipeableViewerOverlay
 import com.tabula.v3.ui.components.SwipeableViewerState
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
+import com.tabula.v3.ui.util.DragSelectState
+import com.tabula.v3.ui.util.gridDragHandler
+import com.tabula.v3.ui.util.gridDragHandlerLongPress
 import com.tabula.v3.ui.util.HapticFeedback
+import com.tabula.v3.ui.util.ItemBounds
 
 /**
  * 相册视图屏幕
@@ -137,7 +144,8 @@ fun AlbumViewScreen(
     playMotionSound: Boolean = false,
     motionSoundVolume: Int = 100,
     onMoveToAlbum: ((List<Long>, String) -> Unit)? = null,
-    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null
+    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null,
+    onDeleteImages: ((List<Long>) -> Unit)? = null
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val context = LocalContext.current
@@ -164,7 +172,7 @@ fun AlbumViewScreen(
     // 使用 Map 优化查找，将 O(n) 降为 O(1)
     val imageMap = remember(allImages) { allImages.associateBy { it.id } }
 
-    // 加载图片逻辑 - 优化版：渐进式加载 + Map 查找
+    // 加载图片逻辑 - 优化版：渐进式加载 + Map 查找 + 协程取消检查
     LaunchedEffect(currentAlbum?.id) {
         if (currentAlbum != null) {
             // 重置加载状态
@@ -173,6 +181,9 @@ fun AlbumViewScreen(
             if (getImageMappingsForAlbum != null) {
                 // 使用新的加载方式：支持已清理原图的图片
                 val mappings = getImageMappingsForAlbum(currentAlbum.id)
+                
+                // 协程取消检查：如果在获取 mappings 后协程已被取消，直接返回
+                if (!isActive) return@LaunchedEffect
                 
                 // 使用 Map 进行 O(1) 查找，而非 O(n) 的 find
                 // 收集需要从 MediaStore 查询的 URI（不在 imageMap 中的）
@@ -192,11 +203,17 @@ fun AlbumViewScreen(
                 val batchSize = 50
                 val queriedImages = mutableListOf<ImageFile>()
                 for (i in missingUris.indices step batchSize) {
+                    // 协程取消检查：在每个批次前检查，避免已取消的协程继续执行耗时操作
+                    if (!isActive) return@LaunchedEffect
+                    
                     val batch = missingUris.subList(i, minOf(i + batchSize, missingUris.size))
                     batch.mapNotNull { uri ->
                         queryImageFromUri(contentResolver, uri)
                     }.let { queriedImages.addAll(it) }
                 }
+                
+                // 协程取消检查：在更新状态前检查，避免更新已无效的状态
+                if (!isActive) return@LaunchedEffect
                 
                 // 合并结果并去重
                 albumImages = (foundImages + queriedImages).distinctBy { it.id }
@@ -269,7 +286,8 @@ fun AlbumViewScreen(
                 albums = albums,
                 allImages = allImages,
                 onMoveToAlbum = onMoveToAlbum,
-                onCopyToAlbum = onCopyToAlbum
+                onCopyToAlbum = onCopyToAlbum,
+                onDeleteImages = onDeleteImages
             )
         } else {
              // Loading state
@@ -331,7 +349,8 @@ private fun AlbumContentView(
     albums: List<Album> = emptyList(),
     allImages: List<ImageFile> = emptyList(),
     onMoveToAlbum: ((List<Long>, String) -> Unit)? = null,
-    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null
+    onCopyToAlbum: ((List<Long>, String) -> Unit)? = null,
+    onDeleteImages: ((List<Long>) -> Unit)? = null
 ) {
     val context = LocalContext.current
     var showMenu by remember { mutableStateOf(false) }
@@ -350,6 +369,30 @@ private fun AlbumContentView(
     
     // 删除空图集确认弹窗状态
     var showDeleteEmptyConfirm by remember { mutableStateOf(false) }
+    
+    // 删除图片确认弹窗状态
+    var showDeleteImagesConfirm by remember { mutableStateOf(false) }
+    
+    // 滑动多选状态
+    val dragSelectState = remember(images) {
+        DragSelectState(
+            items = { images },
+            itemKey = { it.id },
+            selectedIds = { selectedImageIds },
+            onSelectionChange = { newSelection ->
+                selectedImageIds = newSelection
+                // 如果取消选中所有项，退出多选模式
+                if (newSelection.isEmpty() && isSelectionMode) {
+                    isSelectionMode = false
+                }
+            },
+            onEnterSelectionMode = {
+                if (!isSelectionMode) {
+                    isSelectionMode = true
+                }
+            }
+        )
+    }
     
     // 退出多选模式
     fun exitSelectionMode() {
@@ -755,32 +798,54 @@ private fun AlbumContentView(
                     bottom = navBarHeight + if (isSelectionMode) 80.dp else 4.dp
                 ),
                 state = gridState,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .gridDragHandler(dragSelectState, isSelectionMode = isSelectionMode)
                 // 注：LazyVerticalGrid 的预取由 Compose 自动管理
                 // 图片加载优化主要通过 Coil 的缓存策略实现
             ) {
                 items(images, key = { it.id }) { image ->
-                    PhotoGridItem(
-                        image = image,
-                        showHdrBadge = showHdrBadges,
-                        showMotionBadge = showMotionBadges,
-                        onClick = { sourceRect ->
-                            onImageClick(image, sourceRect)
-                        },
-                        onSetCover = onSetCover?.let { callback ->
-                            { callback(image.id) }
-                        },
-                        isSelectionMode = isSelectionMode,
-                        isSelected = image.id in selectedImageIds,
-                        onLongPress = {
-                            // 长按进入多选模式并选中当前图片
-                            isSelectionMode = true
-                            selectedImageIds = setOf(image.id)
-                        },
-                        onToggleSelect = {
-                            toggleSelection(image.id)
+                    // 使用 Box 包装并注册位置（窗口坐标系），支持滑动多选
+                    Box(
+                        modifier = Modifier.onGloballyPositioned { coordinates ->
+                            val position = coordinates.positionInWindow()
+                            val size = coordinates.size
+                            dragSelectState.registerItemBounds(
+                                image.id,
+                                ItemBounds(
+                                    left = position.x,
+                                    top = position.y,
+                                    right = position.x + size.width,
+                                    bottom = position.y + size.height
+                                )
+                            )
                         }
-                    )
+                    ) {
+                        PhotoGridItem(
+                            image = image,
+                            showHdrBadge = showHdrBadges,
+                            showMotionBadge = showMotionBadges,
+                            onClick = { sourceRect ->
+                                onImageClick(image, sourceRect)
+                            },
+                            onSetCover = onSetCover?.let { callback ->
+                                { callback(image.id) }
+                            },
+                            isSelectionMode = isSelectionMode,
+                            isSelected = image.id in selectedImageIds,
+                            onLongPress = {
+                                // 长按进入多选模式并选中当前图片
+                                if (!isSelectionMode) {
+                                    HapticFeedback.heavyTap(context)
+                                    isSelectionMode = true
+                                    selectedImageIds = setOf(image.id)
+                                }
+                            },
+                            onToggleSelect = {
+                                toggleSelection(image.id)
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -879,8 +944,81 @@ private fun AlbumContentView(
                             )
                         }
                     }
+                    
+                    // 删除按钮
+                    if (onDeleteImages != null) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    HapticFeedback.mediumTap(context)
+                                    showDeleteImagesConfirm = true
+                                }
+                                .padding(horizontal = 24.dp, vertical = 8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Delete,
+                                contentDescription = "删除",
+                                tint = Color(0xFFFF3B30),
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "删除",
+                                color = Color(0xFFFF3B30),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
                 }
             }
+        }
+        
+        // 删除图片确认弹窗
+        if (showDeleteImagesConfirm) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { showDeleteImagesConfirm = false },
+                containerColor = if (isDarkTheme) Color(0xFF1C1C1E) else Color.White,
+                title = {
+                    Text(
+                        text = "删除图片",
+                        color = if (isDarkTheme) Color.White else Color.Black,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Text(
+                        text = "确定要删除选中的 ${selectedImageIds.size} 张图片吗？\n\n此操作将永久删除图片，无法恢复。",
+                        color = if (isDarkTheme) Color(0xFFAEAEB2) else Color(0xFF3C3C43)
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onDeleteImages?.invoke(selectedImageIds.toList())
+                            showDeleteImagesConfirm = false
+                            exitSelectionMode()
+                            HapticFeedback.mediumTap(context)
+                        }
+                    ) {
+                        Text(
+                            text = "删除",
+                            color = Color(0xFFFF3B30),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteImagesConfirm = false }) {
+                        Text(
+                            text = "取消",
+                            color = Color(0xFF007AFF)
+                        )
+                    }
+                }
+            )
         }
         
         // 图集选择弹窗

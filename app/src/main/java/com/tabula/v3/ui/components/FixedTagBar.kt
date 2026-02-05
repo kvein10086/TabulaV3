@@ -10,6 +10,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
@@ -24,13 +25,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -44,10 +48,10 @@ import com.tabula.v3.ui.util.HapticFeedback
  * 固定标签栏组件 - 用于"固定标签点击"模式
  *
  * 功能：
- * - 显示可点击的相册标签（单行水平滚动）
+ * - 显示可点击的相册标签（双行水平滚动）
  * - 点击标签直接触发归类
  * - 固定显示在"x张待整理"下方
- * - 新建按钮在第一个位置
+ * - 新建按钮在第一行第一个位置
  *
  * @param albums 相册列表
  * @param onAlbumClick 点击相册标签的回调
@@ -63,39 +67,75 @@ fun FixedTagBar(
     onTagPositionChanged: ((Int, TagPosition) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val scrollState = rememberScrollState()
+    val scrollState1 = rememberScrollState()
+    val scrollState2 = rememberScrollState()
     val isDarkTheme = LocalIsDarkTheme.current
 
-    Row(
-        modifier = modifier
-            .horizontalScroll(scrollState)
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // 新建按钮 (索引 0)
-        FixedTagChip(
-            text = "新建",
-            isCreateNew = true,
-            onClick = onCreateNewAlbumClick,
-            onPositioned = { coordinates ->
-                onTagPositionChanged?.invoke(0, coordinates)
-            }
-        )
+    // 将相册按顺序分成两行：前半部分在第一行，后半部分在第二行
+    val midPoint = (albums.size + 1) / 2  // 第一行多放一个（如果是奇数）
+    val row1Albums = albums.take(midPoint)
+    val row2Albums = albums.drop(midPoint)
 
-        // 相册标签 (索引 1+)
-        albums.forEachIndexed { index, album ->
+    Column(
+        modifier = modifier.padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        // 第一行：新建按钮 + 前半部分相册
+        Row(
+            modifier = Modifier
+                .horizontalScroll(scrollState1)
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 新建按钮 (索引 0)
             FixedTagChip(
-                text = album.name,
-                onClick = { onAlbumClick(album) },
+                text = "新建",
+                isCreateNew = true,
+                onClick = onCreateNewAlbumClick,
                 onPositioned = { coordinates ->
-                    onTagPositionChanged?.invoke(index + 1, coordinates)
+                    onTagPositionChanged?.invoke(0, coordinates)
                 }
             )
+
+            // 第一行相册标签（索引 0, 1, 2... 到 midPoint-1）
+            row1Albums.forEachIndexed { index, album ->
+                FixedTagChip(
+                    text = album.name,
+                    onClick = { onAlbumClick(album) },
+                    onPositioned = { coordinates ->
+                        onTagPositionChanged?.invoke(index + 1, coordinates)
+                    }
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
         }
 
-        // 末尾留白
-        Spacer(modifier = Modifier.width(8.dp))
+        // 第二行：后半部分相册（如果有的话）
+        if (row2Albums.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .horizontalScroll(scrollState2)
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 第二行相册标签（索引 midPoint, midPoint+1...）
+                row2Albums.forEachIndexed { index, album ->
+                    val originalIndex = midPoint + index
+                    FixedTagChip(
+                        text = album.name,
+                        onClick = { onAlbumClick(album) },
+                        onPositioned = { coordinates ->
+                            onTagPositionChanged?.invoke(originalIndex + 1, coordinates)
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+        }
     }
 }
 
@@ -118,6 +158,9 @@ private fun FixedTagChip(
     val isDarkTheme = LocalIsDarkTheme.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
+    
+    // 缓存上一次的位置，只在位置真正变化时才触发回调，避免不必要的重组
+    var lastBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
 
     // 缩放动画
     val scale by animateFloatAsState(
@@ -155,12 +198,17 @@ private fun FixedTagChip(
         modifier = Modifier
             .scale(scale)
             .onGloballyPositioned { coordinates ->
-                onPositioned?.invoke(
-                    TagPosition(
-                        coordinates = coordinates,
-                        updatedAt = android.os.SystemClock.uptimeMillis()
+                // 只在位置真正变化时才触发回调，避免不必要的状态更新
+                val currentBounds = coordinates.boundsInRoot()
+                if (lastBounds == null || lastBounds != currentBounds) {
+                    lastBounds = currentBounds
+                    onPositioned?.invoke(
+                        TagPosition(
+                            coordinates = coordinates,
+                            updatedAt = android.os.SystemClock.uptimeMillis()
+                        )
                     )
-                )
+                }
             }
             .clickable(
                 interactionSource = interactionSource,

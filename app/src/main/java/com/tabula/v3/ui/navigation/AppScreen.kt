@@ -17,5 +17,8 @@ enum class AppScreen {
     VIBRATION_SOUND,     // 振动与声音
     DISPLAY_SETTINGS,    // 显示设置
     LAB,                 // 实验室
-    REMINDER_SETTINGS    // 提醒设置
+    REMINDER_SETTINGS,   // 提醒设置
+    HIDDEN_ALBUMS,       // 隐藏与屏蔽图集管理
+    PRIVACY_POLICY,      // 隐私政策
+    TUTORIAL             // 使用教程
 }

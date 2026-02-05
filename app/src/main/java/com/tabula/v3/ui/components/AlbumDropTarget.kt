@@ -21,12 +21,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -81,11 +84,25 @@ fun AlbumDropTarget(
     val rowScrollStates = remember { mutableStateMapOf<Int, androidx.compose.foundation.ScrollState>() }
     
     // 自动滚动到选中的标签所在行（垂直滚动）
-    LaunchedEffect(selectedRow) {
+    // 始终让选中行保持在可视区域的中间位置，使用平滑动画
+    LaunchedEffect(selectedRow, totalRows) {
         // 估算每行高度（标签高度 + 间距）
-        val rowHeightPx = with(density) { 52.dp.toPx() }
-        val targetScrollY = (selectedRow * rowHeightPx).toInt()
-        verticalScrollState.animateScrollTo(targetScrollY)
+        val rowHeightPx = with(density) { 44.dp.toPx() }  // 实际行高（标签36dp + 间距8dp）
+        val visibleHeightPx = with(density) { 160.dp.toPx() }  // 可视区域高度
+        
+        // 计算选中行的中心位置
+        val rowCenterPx = selectedRow * rowHeightPx + rowHeightPx / 2
+        // 计算目标滚动位置：让选中行在可视区域中间
+        val targetScrollY = (rowCenterPx - visibleHeightPx / 2).toInt().coerceAtLeast(0)
+        
+        // 使用快速但平滑的动画滚动
+        verticalScrollState.animateScrollTo(
+            value = targetScrollY,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioLowBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        )
     }
     
     // 自动滚动到选中的标签所在列（水平滚动）
@@ -98,22 +115,29 @@ fun AlbumDropTarget(
             // 滚动到让选中的标签在中间位置
             val screenWidthPx = with(density) { 360.dp.toPx() }  // 估算屏幕宽度
             val centeredScrollX = (targetScrollX - screenWidthPx / 2 + chipWidthPx / 2).toInt().coerceAtLeast(0)
-            rowState.animateScrollTo(centeredScrollX)
+            // 使用快速但平滑的动画滚动
+            rowState.animateScrollTo(
+                value = centeredScrollX,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioLowBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            )
         }
     }
     
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(top = 12.dp, bottom = 16.dp),
+            .padding(top = 8.dp, bottom = 8.dp),
         contentAlignment = Alignment.Center
     ) {
         // 使用 Column + Row 实现多行网格布局，支持垂直滚动
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 6.dp)  // 内部顶部padding，让放大的标签能完整显示
-                .heightIn(max = 140.dp)  // 最多显示约3行
+                .padding(top = 4.dp, bottom = 4.dp)  // 上下 padding，确保标签完整显示
+                .heightIn(max = 160.dp)  // 最多显示约3-4行
                 .verticalScroll(verticalScrollState),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             horizontalAlignment = Alignment.Start
@@ -199,8 +223,8 @@ private fun DropTargetChip(
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     
-    // 移除缩放动画，选中时保持原始大小
-    // val scale by animateFloatAsState(...)
+    // 缓存上一次的位置，只在位置真正变化时才触发回调，避免不必要的重组
+    var lastBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     
     // Glassmorphism 颜色配置
     // 填充颜色：选中时使用对比色（浅色模式用深色，深色模式用浅色）
@@ -231,12 +255,17 @@ private fun DropTargetChip(
     AdaptiveGlass(
         modifier = Modifier
             .onGloballyPositioned { coordinates ->
-                onPositioned?.invoke(
-                    TagPosition(
-                        coordinates = coordinates,
-                        updatedAt = android.os.SystemClock.uptimeMillis()
+                // 只在位置真正变化时才触发回调，避免不必要的状态更新
+                val currentBounds = coordinates.boundsInRoot()
+                if (lastBounds == null || lastBounds != currentBounds) {
+                    lastBounds = currentBounds
+                    onPositioned?.invoke(
+                        TagPosition(
+                            coordinates = coordinates,
+                            updatedAt = android.os.SystemClock.uptimeMillis()
+                        )
                     )
-                )
+                }
             },
         shape = RoundedCornerShape(cornerRadius),
         blurRadius = 24.dp,

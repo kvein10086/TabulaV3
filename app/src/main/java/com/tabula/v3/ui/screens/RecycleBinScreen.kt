@@ -88,7 +88,9 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -104,7 +106,11 @@ import com.tabula.v3.ui.components.MediaBadgeRow
 import com.tabula.v3.ui.components.MotionPhotoPlayer
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.theme.TabulaColors
+import com.tabula.v3.ui.util.DragSelectState
+import com.tabula.v3.ui.util.gridDragHandler
+import com.tabula.v3.ui.util.gridDragHandlerLongPress
 import com.tabula.v3.ui.util.HapticFeedback
+import com.tabula.v3.ui.util.ItemBounds
 import com.tabula.v3.ui.util.findActivity
 import com.tabula.v3.ui.util.rememberImageFeatures
 import kotlinx.coroutines.delay
@@ -155,6 +161,27 @@ fun RecycleBinScreen(
     
     // 帮助提示对话框
     var showHelpDialog by remember { mutableStateOf(false) }
+    
+    // 滑动多选状态
+    val dragSelectState = remember(deletedImages) {
+        DragSelectState(
+            items = { deletedImages },
+            itemKey = { it.id },
+            selectedIds = { selectedImages },
+            onSelectionChange = { newSelection ->
+                selectedImages = newSelection
+                // 如果取消选中所有项，退出多选模式
+                if (newSelection.isEmpty() && isSelectionMode) {
+                    isSelectionMode = false
+                }
+            },
+            onEnterSelectionMode = {
+                if (!isSelectionMode) {
+                    isSelectionMode = true
+                }
+            }
+        )
+    }
 
     // 返回键处理
     BackHandler(enabled = viewerState != null || isSelectionMode) {
@@ -230,7 +257,9 @@ fun RecycleBinScreen(
                 
                 LazyVerticalStaggeredGrid(
                     columns = StaggeredGridCells.Fixed(3),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .gridDragHandler(dragSelectState, isSelectionMode = isSelectionMode),
                     contentPadding = PaddingValues(
                         start = 16.dp,
                         end = 16.dp,
@@ -243,36 +272,53 @@ fun RecycleBinScreen(
                     items(deletedImages, key = { it.id }) { image ->
                         val isSelected = selectedImages.contains(image.id)
                         
-                        RecycleBinItem(
-                            image = image,
-                            imageLoader = imageLoader,
-                            isSelected = isSelected,
-                            isSelectionMode = isSelectionMode,
-                            badges = rememberImageBadges(image, showHdrBadges, showMotionBadges),
-                            onClick = {
-                                if (isSelectionMode) {
-                                    // 在多选模式下切换选中
-                                    if (!isSelected) HapticFeedback.lightTap(context)
-                                    selectedImages = if (isSelected) {
-                                        selectedImages - image.id
-                                    } else {
-                                        selectedImages + image.id
-                                    }
-                                } else {
-                                    // 打开全屏查看
-                                    val index = deletedImages.indexOf(image)
-                                    viewerState = ViewerState(index)
-                                }
-                            },
-                            onLongClick = {
-                                if (!isSelectionMode) {
-                                    // 进入多选模式，触发振动
-                                    HapticFeedback.mediumTap(context)
-                                    isSelectionMode = true
-                                    selectedImages = setOf(image.id)
-                                }
+                        // 使用 Box 包装并注册位置（窗口坐标系），支持滑动多选
+                        Box(
+                            modifier = Modifier.onGloballyPositioned { coordinates ->
+                                val position = coordinates.positionInWindow()
+                                val size = coordinates.size
+                                dragSelectState.registerItemBounds(
+                                    image.id,
+                                    ItemBounds(
+                                        left = position.x,
+                                        top = position.y,
+                                        right = position.x + size.width,
+                                        bottom = position.y + size.height
+                                    )
+                                )
                             }
-                        )
+                        ) {
+                            RecycleBinItem(
+                                image = image,
+                                imageLoader = imageLoader,
+                                isSelected = isSelected,
+                                isSelectionMode = isSelectionMode,
+                                badges = rememberImageBadges(image, showHdrBadges, showMotionBadges),
+                                onClick = {
+                                    if (isSelectionMode) {
+                                        // 在多选模式下切换选中
+                                        if (!isSelected) HapticFeedback.lightTap(context)
+                                        selectedImages = if (isSelected) {
+                                            selectedImages - image.id
+                                        } else {
+                                            selectedImages + image.id
+                                        }
+                                    } else {
+                                        // 打开全屏查看
+                                        val index = deletedImages.indexOf(image)
+                                        viewerState = ViewerState(index)
+                                    }
+                                },
+                                onLongClick = {
+                                    if (!isSelectionMode) {
+                                        // 进入多选模式，触发振动
+                                        HapticFeedback.mediumTap(context)
+                                        isSelectionMode = true
+                                        selectedImages = setOf(image.id)
+                                    }
+                                }
+                            )
+                        }
                     }
                 }
             }

@@ -49,13 +49,18 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.Canvas
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -79,6 +84,7 @@ import java.util.Locale
  * 清理模式枚举
  */
 enum class CleanupMode {
+    GLOBAL, // 全局整理
     ALBUM,  // 图集专清
     MONTH   // 月份专清
 }
@@ -171,7 +177,8 @@ fun AlbumCleanupBottomSheet(
     allImages: List<ImageFile> = emptyList(),
     selectedMonthId: String? = null,
     onSelectMonth: ((MonthInfo) -> Unit)? = null,
-    onStartMonthCleanup: (() -> Unit)? = null
+    onStartMonthCleanup: (() -> Unit)? = null,
+    onResetAndStartMonthCleanup: ((MonthInfo) -> Unit)? = null  // 重置并重新开始月份清理（用于已完成的月份）
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val context = LocalContext.current
@@ -185,21 +192,53 @@ fun AlbumCleanupBottomSheet(
     // 清理模式状态
     var cleanupMode by remember { mutableStateOf(CleanupMode.ALBUM) }
     
-    // 确认弹窗状态（用于已完成图集的重新整理提醒）
+    // 确认弹窗状态（用于已完成图集/月份的重新整理提醒）
     var showResetConfirmDialog by remember { mutableStateOf(false) }
     var pendingResetAlbum by remember { mutableStateOf<Album?>(null) }
+    var pendingResetMonth by remember { mutableStateOf<MonthInfo?>(null) }
+    
+    // 获取清理引擎实例（用于获取月份的清理信息）
+    val albumCleanupEngine = remember { AlbumCleanupEngine.getInstance(context) }
+    
+    // 预先构建 cleanupInfo Map，避免每次重组时 O(n) 查找
+    val cleanupInfoMap = remember(albumCleanupInfos) {
+        albumCleanupInfos.associateBy { it.album.id }
+    }
     
     // 显示所有图集（包括已完成的），已完成的会有特殊标记
-    // 排序规则：只有已完成的置底，其他保持原有顺序
-    val displayAlbums = albums.sortedBy { album ->
-        val cleanupInfo = albumCleanupInfos.find { it.album.id == album.id }
-        // 只有已完成的排到后面，其他（未分析、正在清理）保持原有顺序
-        cleanupInfo?.isCompleted == true
+    // 排序规则：
+    // 1. 普通图集（有照片、未完成）按照片数量降序
+    // 2. 已完成的图集
+    // 3. 空图集（照片数量为0）放到最后
+    val displayAlbums = remember(albums, cleanupInfoMap) {
+        albums.sortedWith(
+            compareBy<Album> { album ->
+                val cleanupInfo = cleanupInfoMap[album.id]
+                val isCompleted = cleanupInfo?.isCompleted == true
+                val isEmpty = album.imageCount == 0
+                when {
+                    isEmpty -> 2        // 空图集放最后
+                    isCompleted -> 1    // 已完成的图集次之
+                    else -> 0           // 普通图集在前面
+                }
+            }.thenByDescending { it.imageCount }  // 同类别内按照片数量降序排列
+        )
     }
     
     // 从图片列表中提取月份分组（按时间倒序排列）
-    val monthInfos = remember(allImages) {
-        buildMonthInfos(allImages)
+    // 使用 produceState 异步计算，避免大量图片时 UI 卡顿
+    val monthInfos by produceState(initialValue = emptyList<MonthInfo>(), key1 = allImages) {
+        value = withContext(Dispatchers.Default) {
+            buildMonthInfos(allImages)
+        }
+    }
+    
+    // 为月份构建清理信息 Map（月份使用虚拟 Album）
+    val monthCleanupInfoMap = remember(monthInfos, analyzingAlbumId) {
+        monthInfos.associate { monthInfo ->
+            val virtualAlbum = monthInfo.toVirtualAlbum()
+            monthInfo.cleanupAlbumId to albumCleanupEngine.getAlbumCleanupInfo(virtualAlbum)
+        }
     }
     
     // 获取导航栏高度，用于底部内边距
@@ -240,42 +279,19 @@ fun AlbumCleanupBottomSheet(
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
             )
             
-            // 切换到全局整理按钮
-            Button(
-                onClick = {
-                    HapticFeedback.lightTap(context)
-                    onSwitchToGlobal()
-                },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isDarkTheme) Color(0xFF2C2C2E) else Color(0xFFF2F2F7)
-                ),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Public,
-                    contentDescription = null,
-                    tint = accentColor,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "切换到全局整理",
-                    color = accentColor,
-                    fontWeight = FontWeight.Medium
-                )
-            }
+            Spacer(modifier = Modifier.height(4.dp))
             
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            // 模式切换分段控件（图集专清 / 月份专清）
+            // 三合一模式切换分段控件（全局整理 / 图集专清 / 月份专清）
             CleanupModeToggle(
                 currentMode = cleanupMode,
                 onModeChange = { mode ->
                     HapticFeedback.lightTap(context)
-                    cleanupMode = mode
+                    if (mode == CleanupMode.GLOBAL) {
+                        // 全局整理直接触发切换
+                        onSwitchToGlobal()
+                    } else {
+                        cleanupMode = mode
+                    }
                 },
                 isDarkTheme = isDarkTheme,
                 accentColor = accentColor,
@@ -286,8 +302,11 @@ fun AlbumCleanupBottomSheet(
             
             Spacer(modifier = Modifier.height(8.dp))
             
-            // 根据模式显示不同的列表
+            // 根据模式显示不同的列表（全局模式会直接跳转，不在这里处理）
             when (cleanupMode) {
+                CleanupMode.GLOBAL -> {
+                    // 全局模式不需要显示列表，点击后会直接跳转
+                }
                 CleanupMode.ALBUM -> {
                     // 图集列表
                     if (displayAlbums.isEmpty()) {
@@ -320,7 +339,7 @@ fun AlbumCleanupBottomSheet(
                                 .weight(1f, fill = false)
                         ) {
                             items(displayAlbums, key = { it.id }) { album ->
-                                val info = albumCleanupInfos.find { it.album.id == album.id }
+                                val info = cleanupInfoMap[album.id]
                                 val isSelected = selectedAlbumId == album.id
                                 val isAnalyzing = analyzingAlbumId == album.id
                                 
@@ -377,10 +396,16 @@ fun AlbumCleanupBottomSheet(
                         ) {
                             items(monthInfos, key = { it.id }) { monthInfo ->
                                 val isSelected = selectedMonthId == monthInfo.id
+                                // 从月份专用的清理信息 Map 获取
+                                val monthCleanupInfo = monthCleanupInfoMap[monthInfo.cleanupAlbumId]
+                                val isAnalyzing = analyzingAlbumId == monthInfo.cleanupAlbumId
                                 
                                 MonthCleanupItem(
                                     monthInfo = monthInfo,
+                                    info = monthCleanupInfo,
                                     isSelected = isSelected,
+                                    isAnalyzing = isAnalyzing,
+                                    analysisProgress = if (isAnalyzing) analysisProgress else (monthCleanupInfo?.analysisProgress ?: 0f),
                                     accentColor = accentColor,
                                     textColor = textColor,
                                     secondaryTextColor = secondaryTextColor,
@@ -396,8 +421,9 @@ fun AlbumCleanupBottomSheet(
                 }
             }
             
-            // 底部开始按钮 - 根据模式显示不同状态
+            // 底部开始按钮 - 根据模式显示不同状态（全局模式不显示按钮）
             val showStartButton = when (cleanupMode) {
+                CleanupMode.GLOBAL -> false  // 全局模式点击后直接跳转，不需要开始按钮
                 CleanupMode.ALBUM -> selectedAlbumId != null && displayAlbums.isNotEmpty()
                 CleanupMode.MONTH -> selectedMonthId != null && monthInfos.isNotEmpty()
             }
@@ -405,17 +431,25 @@ fun AlbumCleanupBottomSheet(
             if (showStartButton) {
                 Spacer(modifier = Modifier.height(16.dp))
                 
-                // 检查选中的图集是否已完成（仅图集模式）
+                // 检查选中的图集/月份是否已完成
                 val selectedAlbum = albums.find { it.id == selectedAlbumId }
-                val selectedInfo = albumCleanupInfos.find { it.album.id == selectedAlbumId }
-                val isSelectedCompleted = selectedInfo?.isCompleted == true
+                val selectedAlbumInfo = cleanupInfoMap[selectedAlbumId]
+                val isAlbumCompleted = selectedAlbumInfo?.isCompleted == true
+                
+                // 获取选中的月份及其清理信息（从月份专用 Map 获取）
+                val selectedMonth = monthInfos.find { it.id == selectedMonthId }
+                val selectedMonthInfo = selectedMonth?.let { monthCleanupInfoMap[it.cleanupAlbumId] }
+                val isMonthCompleted = selectedMonthInfo?.isCompleted == true
                 
                 Button(
                     onClick = {
                         HapticFeedback.mediumTap(context)
                         when (cleanupMode) {
+                            CleanupMode.GLOBAL -> {
+                                // 全局模式不会到达这里，因为 showStartButton 为 false
+                            }
                             CleanupMode.ALBUM -> {
-                                if (isSelectedCompleted && selectedAlbum != null) {
+                                if (isAlbumCompleted && selectedAlbum != null) {
                                     // 已完成的图集，显示确认弹窗
                                     pendingResetAlbum = selectedAlbum
                                     showResetConfirmDialog = true
@@ -424,7 +458,13 @@ fun AlbumCleanupBottomSheet(
                                 }
                             }
                             CleanupMode.MONTH -> {
-                                onStartMonthCleanup?.invoke()
+                                if (isMonthCompleted && selectedMonth != null) {
+                                    // 已完成的月份，显示确认弹窗
+                                    pendingResetMonth = selectedMonth
+                                    showResetConfirmDialog = true
+                                } else {
+                                    onStartMonthCleanup?.invoke()
+                                }
                             }
                         }
                     },
@@ -464,12 +504,16 @@ fun AlbumCleanupBottomSheet(
         }
     }
     
-    // 重新整理确认弹窗
-    if (showResetConfirmDialog && pendingResetAlbum != null) {
+    // 重新整理确认弹窗（支持图集和月份）
+    if (showResetConfirmDialog && (pendingResetAlbum != null || pendingResetMonth != null)) {
+        val targetName = pendingResetAlbum?.name ?: pendingResetMonth?.displayName ?: ""
+        val isMonthReset = pendingResetMonth != null
+        
         AlertDialog(
             onDismissRequest = {
                 showResetConfirmDialog = false
                 pendingResetAlbum = null
+                pendingResetMonth = null
             },
             containerColor = containerColor,
             title = {
@@ -481,18 +525,25 @@ fun AlbumCleanupBottomSheet(
             },
             text = {
                 Text(
-                    text = "「${pendingResetAlbum?.name}」已经整理完毕。\n\n是否重新整理这个图集？",
+                    text = "「$targetName」已经整理完毕。\n\n是否重新整理${if (isMonthReset) "这个月份" else "这个图集"}？",
                     color = if (isDarkTheme) Color(0xFFAEAEB2) else Color(0xFF3C3C43)
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        pendingResetAlbum?.let { album ->
-                            onResetAndStartCleanup?.invoke(album)
+                        if (isMonthReset) {
+                            pendingResetMonth?.let { month ->
+                                onResetAndStartMonthCleanup?.invoke(month)
+                            }
+                        } else {
+                            pendingResetAlbum?.let { album ->
+                                onResetAndStartCleanup?.invoke(album)
+                            }
                         }
                         showResetConfirmDialog = false
                         pendingResetAlbum = null
+                        pendingResetMonth = null
                     }
                 ) {
                     Text(
@@ -507,6 +558,7 @@ fun AlbumCleanupBottomSheet(
                     onClick = {
                         showResetConfirmDialog = false
                         pendingResetAlbum = null
+                        pendingResetMonth = null
                     }
                 ) {
                     Text(
@@ -629,54 +681,9 @@ private fun AlbumCleanupItem(
                 fontSize = 13.sp
             )
             
-            Spacer(modifier = Modifier.height(4.dp))
-            
-            // 进度条或状态文本
-            if (isAnalyzing) {
-                // 分析中显示分析进度
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    LinearProgressIndicator(
-                        progress = { analysisProgress },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp)),
-                        color = accentColor,
-                        trackColor = accentColor.copy(alpha = 0.2f),
-                        strokeCap = StrokeCap.Round
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "${(analysisProgress * 100).toInt()}%",
-                        color = secondaryTextColor,
-                        fontSize = 11.sp
-                    )
-                }
-            } else if (showProgress && info?.isCompleted == false && statusText != null) {
-                // 清理进度
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    LinearProgressIndicator(
-                        progress = { cleanupProgress },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp)),
-                        color = if (info.isCompleted) Color(0xFF34C759) else accentColor,
-                        trackColor = accentColor.copy(alpha = 0.2f),
-                        strokeCap = StrokeCap.Round
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = statusText,
-                        color = secondaryTextColor,
-                        fontSize = 11.sp
-                    )
-                }
-            } else if (statusText != null) {
+            // 状态文本（移除进度条，进度显示在右侧圆环上）
+            if (statusText != null) {
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = statusText,
                     color = if (info?.isCompleted == true) Color(0xFF34C759) else secondaryTextColor,
@@ -687,31 +694,131 @@ private fun AlbumCleanupItem(
         
         Spacer(modifier = Modifier.width(12.dp))
         
-        // 右侧：已完成图标 或 单选按钮
-        if (info?.isCompleted == true) {
-            // 已完成的图集显示勾选图标
-            Icon(
-                imageVector = Icons.Filled.CheckCircle,
-                contentDescription = "已完成",
-                tint = Color(0xFF34C759),
-                modifier = Modifier.size(28.dp)
-            )
-        } else {
-            // 未完成的显示单选按钮
-            RadioButton(
-                selected = isSelected,
-                onClick = onClick,
-                colors = RadioButtonDefaults.colors(
-                    selectedColor = accentColor,
-                    unselectedColor = secondaryTextColor
+        // 右侧：带圆环进度的选择按钮
+        Box(
+            modifier = Modifier.size(48.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            if (info?.isCompleted == true) {
+                // 已完成的图集显示勾选图标
+                Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = "已完成",
+                    tint = Color(0xFF34C759),
+                    modifier = Modifier.size(28.dp)
                 )
-            )
+            } else {
+                // 带圆环进度的选择按钮
+                CircularProgressRadioButton(
+                    isSelected = isSelected,
+                    isAnalyzing = isAnalyzing,
+                    analysisProgress = analysisProgress,
+                    cleanupProgress = cleanupProgress,
+                    showProgress = showProgress,
+                    accentColor = accentColor,
+                    trackColor = secondaryTextColor.copy(alpha = 0.3f),
+                    onClick = onClick
+                )
+            }
         }
     }
 }
 
 /**
- * 清理模式切换分段控件 - iOS风格居中设计
+ * 带圆环进度的选择按钮
+ */
+@Composable
+private fun CircularProgressRadioButton(
+    isSelected: Boolean,
+    isAnalyzing: Boolean,
+    analysisProgress: Float,
+    cleanupProgress: Float,
+    showProgress: Boolean,
+    accentColor: Color,
+    trackColor: Color,
+    onClick: () -> Unit
+) {
+    val size = 28.dp
+    val strokeWidth = 3.dp
+    
+    // 动画化的进度值
+    val animatedProgress by animateFloatAsState(
+        targetValue = when {
+            isAnalyzing -> analysisProgress
+            showProgress -> cleanupProgress
+            else -> 0f
+        },
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "CircularProgress"
+    )
+    
+    // 选中状态的内圆动画
+    val innerCircleScale by animateFloatAsState(
+        targetValue = if (isSelected) 1f else 0f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "InnerCircle"
+    )
+    
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.size(size)) {
+            val canvasSize = size.toPx()
+            val strokePx = strokeWidth.toPx()
+            val radius = (canvasSize - strokePx) / 2
+            
+            // 绘制背景圆环（track）
+            drawCircle(
+                color = trackColor,
+                radius = radius,
+                style = Stroke(width = strokePx)
+            )
+            
+            // 绘制进度圆环
+            if (animatedProgress > 0f) {
+                drawArc(
+                    color = accentColor,
+                    startAngle = -90f,
+                    sweepAngle = 360f * animatedProgress,
+                    useCenter = false,
+                    style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                    size = androidx.compose.ui.geometry.Size(canvasSize - strokePx, canvasSize - strokePx),
+                    topLeft = androidx.compose.ui.geometry.Offset(strokePx / 2, strokePx / 2)
+                )
+            }
+            
+            // 绘制选中状态的内圆
+            if (innerCircleScale > 0f) {
+                val innerRadius = radius * 0.5f * innerCircleScale
+                drawCircle(
+                    color = accentColor,
+                    radius = innerRadius
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 清理模式切换分段控件 - iOS风格三段式设计
+ * 
+ * 三个选项：全局整理 / 图集专清 / 月份专清
+ * - 全局整理：点击后切换到全局整理页面
+ * - 图集专清：按图集分组进行整理
+ * - 月份专清：按月份分组进行整理
  */
 @Composable
 private fun CleanupModeToggle(
@@ -731,67 +838,78 @@ private fun CleanupModeToggle(
     val selectedTextColor = if (isDarkTheme) Color.White else Color.Black
     val unselectedTextColor = if (isDarkTheme) Color(0xFF8E8E93) else Color(0xFF8E8E93)
     
+    // 三个按钮的配置
+    data class ToggleItem(
+        val mode: CleanupMode,
+        val label: String,
+        val icon: androidx.compose.ui.graphics.vector.ImageVector? = null
+    )
+    
+    val toggleItems = listOf(
+        ToggleItem(CleanupMode.GLOBAL, "全局", Icons.Rounded.Public),
+        ToggleItem(CleanupMode.ALBUM, "图集"),
+        ToggleItem(CleanupMode.MONTH, "月份")
+    )
+    
     Box(
         modifier = modifier,
         contentAlignment = Alignment.Center
     ) {
         Row(
             modifier = Modifier
+                .fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
                 .background(containerColor)
                 .padding(4.dp),
-            horizontalArrangement = Arrangement.Center
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            // 图集专清
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(
-                        if (currentMode == CleanupMode.ALBUM) selectedBgColor else Color.Transparent
-                    )
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) {
-                        if (currentMode != CleanupMode.ALBUM) {
-                            onModeChange(CleanupMode.ALBUM)
+            toggleItems.forEach { item ->
+                val isSelected = currentMode == item.mode
+                // 全局模式永远不显示为选中状态（因为点击后会跳转）
+                val showAsSelected = isSelected && item.mode != CleanupMode.GLOBAL
+                
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            if (showAsSelected) selectedBgColor else Color.Transparent
+                        )
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            onModeChange(item.mode)
                         }
-                    }
-                    .padding(horizontal = 24.dp, vertical = 10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "图集专清",
-                    fontSize = 14.sp,
-                    fontWeight = if (currentMode == CleanupMode.ALBUM) FontWeight.SemiBold else FontWeight.Medium,
-                    color = if (currentMode == CleanupMode.ALBUM) selectedTextColor else unselectedTextColor
-                )
-            }
-            
-            // 月份专清
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(
-                        if (currentMode == CleanupMode.MONTH) selectedBgColor else Color.Transparent
-                    )
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
                     ) {
-                        if (currentMode != CleanupMode.MONTH) {
-                            onModeChange(CleanupMode.MONTH)
+                        // 全局模式显示图标
+                        if (item.icon != null) {
+                            Icon(
+                                imageVector = item.icon,
+                                contentDescription = null,
+                                tint = accentColor,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
                         }
+                        Text(
+                            text = item.label,
+                            fontSize = 14.sp,
+                            fontWeight = if (showAsSelected) FontWeight.SemiBold else FontWeight.Medium,
+                            color = when {
+                                item.mode == CleanupMode.GLOBAL -> accentColor  // 全局模式始终用强调色
+                                showAsSelected -> selectedTextColor
+                                else -> unselectedTextColor
+                            }
+                        )
                     }
-                    .padding(horizontal = 24.dp, vertical = 10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "月份专清",
-                    fontSize = 14.sp,
-                    fontWeight = if (currentMode == CleanupMode.MONTH) FontWeight.SemiBold else FontWeight.Medium,
-                    color = if (currentMode == CleanupMode.MONTH) selectedTextColor else unselectedTextColor
-                )
+                }
             }
         }
     }
@@ -803,7 +921,10 @@ private fun CleanupModeToggle(
 @Composable
 private fun MonthCleanupItem(
     monthInfo: MonthInfo,
+    info: AlbumCleanupInfo?,
     isSelected: Boolean,
+    isAnalyzing: Boolean,
+    analysisProgress: Float,
     accentColor: Color,
     textColor: Color,
     secondaryTextColor: Color,
@@ -821,6 +942,21 @@ private fun MonthCleanupItem(
         },
         label = "MonthItemBackground"
     )
+    
+    // 计算进度显示
+    val showProgress = info != null && info.totalGroups > 0
+    val cleanupProgress = info?.let { 
+        if (it.totalGroups > 0) it.processedGroups.toFloat() / it.totalGroups else 0f 
+    } ?: 0f
+    
+    // 状态文本
+    val statusText = when {
+        isAnalyzing -> "分析中..."
+        info?.isCompleted == true -> "已完成"
+        info?.totalGroups ?: -1 < 0 -> null  // 未分析，不显示状态
+        info?.totalGroups == 0 -> null  // 无相似照片时不显示文字
+        else -> "共 ${info?.totalGroups} 组 · 剩余 ${info?.remainingGroups} 组"
+    }
     
     Row(
         modifier = Modifier
@@ -880,25 +1016,53 @@ private fun MonthCleanupItem(
                 overflow = TextOverflow.Ellipsis
             )
             
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(2.dp))
             
             Text(
                 text = "${monthInfo.imageCount} 张照片",
                 color = secondaryTextColor,
                 fontSize = 13.sp
             )
+            
+            // 状态文本
+            if (statusText != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = statusText,
+                    color = if (info?.isCompleted == true) Color(0xFF34C759) else secondaryTextColor,
+                    fontSize = 12.sp
+                )
+            }
         }
         
         Spacer(modifier = Modifier.width(12.dp))
         
-        // 单选按钮
-        RadioButton(
-            selected = isSelected,
-            onClick = onClick,
-            colors = RadioButtonDefaults.colors(
-                selectedColor = accentColor,
-                unselectedColor = secondaryTextColor
-            )
-        )
+        // 右侧：带圆环进度的选择按钮（与图集专清一致）
+        Box(
+            modifier = Modifier.size(48.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            if (info?.isCompleted == true) {
+                // 已完成的月份显示勾选图标
+                Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = "已完成",
+                    tint = Color(0xFF34C759),
+                    modifier = Modifier.size(28.dp)
+                )
+            } else {
+                // 带圆环进度的选择按钮
+                CircularProgressRadioButton(
+                    isSelected = isSelected,
+                    isAnalyzing = isAnalyzing,
+                    analysisProgress = analysisProgress,
+                    cleanupProgress = cleanupProgress,
+                    showProgress = showProgress,
+                    accentColor = accentColor,
+                    trackColor = secondaryTextColor.copy(alpha = 0.3f),
+                    onClick = onClick
+                )
+            }
+        }
     }
 }

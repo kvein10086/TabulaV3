@@ -76,7 +76,7 @@
 
 感谢以下朋友的支持（不按时间排序）：
 
-@Summer_233 | @WIdei | @柴郡 | @k
+[@Summer_233](https://github.com/tanbq-code) | @WIdei | @柴郡 | @k
 
 ---
 

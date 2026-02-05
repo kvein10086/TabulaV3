@@ -866,6 +866,62 @@ class AppPreferences(context: Context) {
             .remove("checkpoint_time_$albumId")
             .apply()
     }
+    
+    // ==================== 相似组图片 ID 持久化（性能优化）====================
+    
+    /**
+     * 保存单个组的图片 ID 列表
+     * 
+     * @param albumId 图集ID
+     * @param groupId 组ID
+     * @param imageIds 组内图片 ID 列表（按顺序）
+     */
+    fun saveGroupImageIds(albumId: String, groupId: String, imageIds: List<Long>) {
+        albumCleanupPrefs.edit()
+            .putString("group_images_${albumId}_$groupId", imageIds.joinToString(","))
+            .apply()
+    }
+    
+    /**
+     * 批量保存多个组的图片 ID 列表
+     * 
+     * @param albumId 图集ID
+     * @param groupImageIds 组ID到图片ID列表的映射
+     */
+    fun saveGroupsImageIds(albumId: String, groupImageIds: Map<String, List<Long>>) {
+        val editor = albumCleanupPrefs.edit()
+        groupImageIds.forEach { (groupId, imageIds) ->
+            editor.putString("group_images_${albumId}_$groupId", imageIds.joinToString(","))
+        }
+        editor.apply()
+    }
+    
+    /**
+     * 获取单个组的图片 ID 列表
+     * 
+     * @param albumId 图集ID
+     * @param groupId 组ID
+     * @return 组内图片 ID 列表，如果不存在返回 null
+     */
+    fun getGroupImageIds(albumId: String, groupId: String): List<Long>? {
+        val idsString = albumCleanupPrefs.getString("group_images_${albumId}_$groupId", null)
+            ?: return null
+        return idsString.split(",").mapNotNull { it.toLongOrNull() }
+    }
+    
+    /**
+     * 检查图集是否有持久化的分组数据
+     * 
+     * @param albumId 图集ID
+     * @return true 如果有分组数据可以恢复
+     */
+    fun hasPersistedGroupData(albumId: String): Boolean {
+        val groupIds = getAlbumGroupIds(albumId)
+        if (groupIds.isEmpty()) return false
+        // 检查第一个组是否有图片数据
+        val firstGroupId = groupIds.firstOrNull() ?: return false
+        return albumCleanupPrefs.contains("group_images_${albumId}_$firstGroupId")
+    }
 
     companion object {
         private const val PREFS_NAME = "tabula_prefs"

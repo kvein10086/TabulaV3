@@ -48,8 +48,10 @@ import androidx.compose.material.icons.outlined.Shuffle
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.SwipeRight
 import androidx.compose.material.icons.outlined.TextFormat
-import androidx.compose.material.icons.outlined.VolumeUp
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.Vibration
+import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.PanTool
 import androidx.compose.material.icons.outlined.Refresh
@@ -156,7 +158,10 @@ fun SettingsScreen(
     onNavigateToSupport: () -> Unit = {},
     onNavigateToReminderSettings: () -> Unit = {},
     excludedAlbumCount: Int = 0,  // 已屏蔽图集数量
-    onNavigateToExcludedAlbums: () -> Unit = {},  // 导航到已屏蔽图集管理
+    hiddenAlbumCount: Int = 0,    // 已隐藏图集数量
+    onNavigateToHiddenAlbums: () -> Unit = {},  // 导航到隐藏与屏蔽图集管理
+    onNavigateToPrivacyPolicy: () -> Unit = {},  // 导航到隐私政策
+    onNavigateToTutorial: () -> Unit = {},  // 导航到使用教程
     scrollState: ScrollState? = null  // 外部传入的滚动状态，用于保持导航返回时的位置
 ) {
     val context = LocalContext.current
@@ -191,15 +196,7 @@ fun SettingsScreen(
     // 当前设置状态
     var currentTheme by remember { mutableStateOf(preferences.themeMode) }
     var currentTopBarMode by remember { mutableStateOf(preferences.topBarDisplayMode) }
-    var currentShowHdrBadges by remember { mutableStateOf(showHdrBadges) }
-    var currentShowMotionBadges by remember { mutableStateOf(showMotionBadges) }
-    var currentPlayMotionSound by remember { mutableStateOf(playMotionSound) }
-    var currentMotionSoundVolume by remember { mutableIntStateOf(motionSoundVolume) }
-    var currentHapticEnabled by remember { mutableStateOf(hapticEnabled) }
-    var currentHapticStrength by remember { mutableIntStateOf(hapticStrength) }
-    var currentSwipeHapticsEnabled by remember { mutableStateOf(swipeHapticsEnabled) }
     var currentRecommendMode by remember { mutableStateOf(preferences.recommendMode) }
-    var currentFluidCloudEnabled by remember { mutableStateOf(fluidCloudEnabled) }
 
     // 底栏状态
     var showThemeSheet by remember { mutableStateOf(false) }
@@ -350,15 +347,18 @@ fun SettingsScreen(
                 Divider(isDarkTheme)
                 
                 SettingsItem(
-                    icon = Icons.Outlined.Block,
+                    icon = Icons.Outlined.VisibilityOff,
                     iconTint = Color(0xFFFF9500), // Orange-yellow
-                    title = "已屏蔽图集",
-                    value = if (excludedAlbumCount > 0) "$excludedAlbumCount 个" else "无",
+                    title = "隐藏与屏蔽",
+                    value = run {
+                        val total = hiddenAlbumCount + excludedAlbumCount
+                        if (total > 0) "$total 个图集" else "无"
+                    },
                     textColor = textColor,
                     secondaryTextColor = secondaryTextColor,
                     onClick = {
                         HapticFeedback.lightTap(context)
-                        onNavigateToExcludedAlbums()
+                        onNavigateToHiddenAlbums()
                     }
                 )
                 
@@ -380,7 +380,7 @@ fun SettingsScreen(
                 Divider(isDarkTheme)
 
                 SettingsItem(
-                    icon = Icons.Outlined.VolumeUp,
+                    icon = Icons.AutoMirrored.Outlined.VolumeUp,
                     iconTint = Color(0xFF64D2FF), // Light Blue
                     title = "振动与声音",
                     value = "",
@@ -389,6 +389,21 @@ fun SettingsScreen(
                     onClick = {
                         HapticFeedback.lightTap(context)
                         onNavigateToVibrationSound()
+                    }
+                )
+                
+                Divider(isDarkTheme)
+                
+                SettingsItem(
+                    icon = Icons.Outlined.MenuBook,
+                    iconTint = Color(0xFF30D158), // Green
+                    title = "使用教程",
+                    value = "",
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor,
+                    onClick = {
+                        HapticFeedback.lightTap(context)
+                        onNavigateToTutorial()
                     }
                 )
             }
@@ -527,9 +542,19 @@ fun SettingsScreen(
                 }
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "绝不上传任何照片数据",
+                    text = "所有数据均在本地处理",
                     style = MaterialTheme.typography.labelSmall,
                     color = secondaryTextColor.copy(alpha = 0.5f)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = "《隐私政策》",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = accentColor,
+                    modifier = Modifier.clickable {
+                        HapticFeedback.lightTap(context)
+                        onNavigateToPrivacyPolicy()
+                    }
                 )
             }
 
@@ -729,7 +754,7 @@ fun VibrationSoundScreen(
 
                     // 音量滑块
                     BeautifulSliderItem(
-                        icon = Icons.Outlined.VolumeUp,
+                        icon = Icons.AutoMirrored.Outlined.VolumeUp,
                         iconTint = Color(0xFF64D2FF),
                         title = "Live 音量",
                         value = motionSoundVolume,
@@ -779,7 +804,10 @@ fun VibrationSoundScreen(
                         onValueChange = onHapticStrengthChange,
                         previewHaptics = true,
                         previewStep = 5,
-                        onPreviewHaptic = { HapticFeedback.lightTap(context) }
+                        onPreviewHaptic = { strength -> 
+                            // 使用专门的强度预览方法，带节流和最小强度保证
+                            HapticFeedback.strengthPreview(context, strength)
+                        }
                     )
 
                     Divider(isDarkTheme)
@@ -2702,7 +2730,7 @@ private fun BeautifulSliderItem(
     onValueChange: (Int) -> Unit,
     previewHaptics: Boolean = false,
     previewStep: Int = 5,
-    onPreviewHaptic: (() -> Unit)? = null
+    onPreviewHaptic: ((Int) -> Unit)? = null  // 修改为接收当前值
 ) {
     // 记录上一次触发振动的值，只在首次组合时初始化
     var lastHapticValue by remember { mutableIntStateOf(value.coerceIn(0, 100)) }
@@ -2775,13 +2803,15 @@ private fun BeautifulSliderItem(
             inactiveColor = inactiveTrackColor,
             onValueChange = { newValue ->
                 val clampedValue = newValue.coerceIn(0, 100)
-                onValueChange(clampedValue)
+                // 先触发振动预览（使用新值），然后再更新状态
+                // 这样振动预览能正确反映用户即将设置的强度
                 if (previewHaptics && enabled && onPreviewHaptic != null) {
                     if (kotlin.math.abs(clampedValue - lastHapticValue) >= previewStep) {
                         lastHapticValue = clampedValue
-                        onPreviewHaptic()
+                        onPreviewHaptic(clampedValue)  // 传递当前值
                     }
                 }
+                onValueChange(clampedValue)
             }
         )
     }

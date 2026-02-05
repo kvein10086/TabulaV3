@@ -8,6 +8,8 @@ import com.tabula.v3.data.preferences.AppPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -135,8 +137,9 @@ class AlbumCleanupEngine(
     private var currentState: State = State.IDLE
     private var currentAlbumId: String? = null
     
-    // 缓存的相似组
+    // 缓存的相似组（使用 Mutex 保护，避免并发问题）
     private var cachedGroups: List<SimilarGroup>? = null
+    private val cacheMutex = Mutex()
     
     /**
      * 获取当前状态
@@ -218,6 +221,12 @@ class AlbumCleanupEngine(
         val totalImages = allGroups.sumOf { it.size }
         preferences.saveAlbumTotalImages(album.id, totalImages)
         
+        // 【性能优化】持久化每个组的图片 ID 列表，避免重新检测相似组
+        val groupImageIds = allGroups.associate { group ->
+            group.id to group.images.map { it.id }
+        }
+        preferences.saveGroupsImageIds(album.id, groupImageIds)
+        
         cachedGroups = allGroups
         
         android.util.Log.d(TAG, "Analysis complete: ${similarGroups.size} similar groups + ${orphanGroups.size} orphan images = ${allGroups.size} total groups, $totalImages total images")
@@ -276,6 +285,8 @@ class AlbumCleanupEngine(
      * 
      * 实现小组合并逻辑：当一组≤10张时，会把下一组的卡片接在后面。
      * 
+     * 【性能优化】优先从持久化数据恢复相似组，避免重新检测（O(n²) 操作）
+     * 
      * @param albumId 图集ID
      * @param allImages 图集内的所有图片
      * @param excludeGroupIds 需要排除的组ID（用于预加载时排除当前正在处理的组）
@@ -286,11 +297,23 @@ class AlbumCleanupEngine(
         allImages: List<ImageFile>,
         excludeGroupIds: List<String> = emptyList()
     ): AlbumCleanupBatch? = withContext(Dispatchers.IO) {
-        // 获取或检测相似组
-        val groups = cachedGroups ?: run {
-            val detected = similarGroupDetector.detectSimilarGroups(allImages)
-            cachedGroups = detected
-            detected
+        // 获取或恢复相似组（使用 Mutex 保护，避免并发问题）
+        val groups = cacheMutex.withLock {
+            cachedGroups ?: run {
+                // 【性能优化】优先从持久化数据恢复，避免重新检测
+                val restored = restoreGroupsFromPrefs(albumId, allImages)
+                if (restored != null) {
+                    android.util.Log.d(TAG, "Restored ${restored.size} groups from preferences for album $albumId")
+                    cachedGroups = restored
+                    restored
+                } else {
+                    // 没有持久化数据，需要重新检测
+                    android.util.Log.d(TAG, "No persisted data, detecting similar groups for album $albumId")
+                    val detected = similarGroupDetector.detectSimilarGroups(allImages)
+                    cachedGroups = detected
+                    detected
+                }
+            }
         }
         
         if (groups.isEmpty()) {
@@ -393,12 +416,75 @@ class AlbumCleanupEngine(
     
     /**
      * 退出图集清理模式
+     * 
+     * 注意：不再清空 cachedGroups，因为有持久化数据可以恢复
      */
     fun exitCleanupMode() {
         currentState = State.IDLE
         currentAlbumId = null
-        cachedGroups = null
+        // 【性能优化】不清空 cachedGroups，下次可以从持久化数据恢复
+        // cachedGroups = null
         preferences.currentCleanupAlbumId = null
+    }
+    
+    /**
+     * 从持久化数据恢复相似组
+     * 
+     * 【性能优化】避免重新执行 O(n²) 的相似组检测算法
+     * 
+     * @param albumId 图集ID
+     * @param allImages 图集内的所有图片
+     * @return 恢复的相似组列表，如果无法恢复返回 null
+     */
+    private fun restoreGroupsFromPrefs(albumId: String, allImages: List<ImageFile>): List<SimilarGroup>? {
+        // 检查是否有持久化数据
+        if (!preferences.hasPersistedGroupData(albumId)) {
+            return null
+        }
+        
+        val groupIds = preferences.getAlbumGroupIds(albumId)
+        if (groupIds.isEmpty()) {
+            return null
+        }
+        
+        // 构建图片 ID 到 ImageFile 的映射，用于快速查找
+        val imageMap = allImages.associateBy { it.id }
+        
+        val restoredGroups = mutableListOf<SimilarGroup>()
+        
+        for (groupId in groupIds) {
+            val imageIds = preferences.getGroupImageIds(albumId, groupId)
+            if (imageIds.isNullOrEmpty()) {
+                // 如果有任何组的数据丢失，返回 null 触发重新检测
+                android.util.Log.w(TAG, "Missing image IDs for group $groupId, will re-detect")
+                return null
+            }
+            
+            // 恢复组内图片（过滤掉已不存在的图片）
+            val groupImages = imageIds.mapNotNull { imageMap[it] }
+            
+            if (groupImages.isEmpty()) {
+                // 组内图片全部不存在（可能被用户删除），跳过该组
+                continue
+            }
+            
+            // 重建 SimilarGroup
+            val sortedImages = groupImages.sortedBy { it.dateModified }
+            restoredGroups.add(
+                SimilarGroup(
+                    images = sortedImages,
+                    startTime = sortedImages.first().dateModified,
+                    endTime = sortedImages.last().dateModified
+                )
+            )
+        }
+        
+        if (restoredGroups.isEmpty()) {
+            return null
+        }
+        
+        // 按组大小降序排列（与原始检测结果一致）
+        return restoredGroups.sortedByDescending { it.images.size }
     }
     
     // ==================== 断点续传 ====================
@@ -452,11 +538,21 @@ class AlbumCleanupEngine(
         val checkpoint = getCheckpoint(albumId) ?: return@withContext null
         val (savedGroupIds, savedIndex) = checkpoint
         
-        // 获取或检测相似组
-        val groups = cachedGroups ?: run {
-            val detected = similarGroupDetector.detectSimilarGroups(allImages)
-            cachedGroups = detected
-            detected
+        // 获取或恢复相似组（使用 Mutex 保护，避免并发问题）
+        // 【性能优化】优先从持久化数据恢复
+        val groups = cacheMutex.withLock {
+            cachedGroups ?: run {
+                val restored = restoreGroupsFromPrefs(albumId, allImages)
+                if (restored != null) {
+                    android.util.Log.d(TAG, "Checkpoint restore: restored ${restored.size} groups from preferences")
+                    cachedGroups = restored
+                    restored
+                } else {
+                    val detected = similarGroupDetector.detectSimilarGroups(allImages)
+                    cachedGroups = detected
+                    detected
+                }
+            }
         }
         
         if (groups.isEmpty()) return@withContext null

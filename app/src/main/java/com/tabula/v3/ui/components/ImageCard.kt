@@ -54,23 +54,27 @@ fun ImageCard(
     val imageLoader = CoilSetup.getImageLoader(context)
     val shape = RoundedCornerShape(cornerRadius)
     
-    // 优化：降低目标尺寸以加快解码速度
-    // 卡片预览不需要 4K 分辨率，1080px 足够清晰
+    // 性能优化：使用 720px 尺寸以加快解码速度
+    // 卡片预览不需要高分辨率，720px 在手机屏幕上已经足够清晰
+    // 从 1080px 降到 720px 可以：
+    // 1. 减少约 55% 的内存占用
+    // 2. 加快解码速度
+    // 3. 减少磁盘 I/O
     val targetSize = remember(imageFile.id, imageFile.aspectRatio, imageFile.hasDimensionInfo) {
         if (!imageFile.hasDimensionInfo) {
             // 无有效尺寸信息，使用默认的 3:4 尺寸
-            Size(810, 1080)
+            Size(540, 720)  // 从 810x1080 降到 540x720
         } else {
-            val maxDimension = 1080  // 从 1440 降到 1080
+            val maxDimension = 720  // 从 1080 降到 720
             if (imageFile.aspectRatio < 1f) {
                 // 竖图：高度为主
                 val height = maxDimension
-                val width = (height * imageFile.aspectRatio).toInt().coerceAtLeast(405)
+                val width = (height * imageFile.aspectRatio).toInt().coerceAtLeast(270)
                 Size(width, height)
             } else {
                 // 横图：宽度为主
                 val width = maxDimension
-                val height = (width / imageFile.aspectRatio).toInt().coerceAtLeast(405)
+                val height = (width / imageFile.aspectRatio).toInt().coerceAtLeast(270)
                 Size(width, height)
             }
         }

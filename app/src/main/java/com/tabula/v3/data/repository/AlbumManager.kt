@@ -16,6 +16,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -70,6 +71,18 @@ class AlbumManager(private val context: Context) {
 
     // 元数据缓存（颜色、排序等）- 按图集名称索引
     private val _metadata = MutableStateFlow<Map<String, AlbumMetadata>>(emptyMap())
+    
+    // ========== 隐藏/屏蔽图集数量（响应式） ==========
+    // 供外部订阅，用于设置页面显示
+    private val _excludedAlbumCount = MutableStateFlow(0)
+    val excludedAlbumCount: StateFlow<Int> = _excludedAlbumCount.asStateFlow()
+    
+    private val _hiddenAlbumCount = MutableStateFlow(0)
+    val hiddenAlbumCount: StateFlow<Int> = _hiddenAlbumCount.asStateFlow()
+    
+    // 隐藏+屏蔽总数
+    private val _hiddenAndExcludedCount = MutableStateFlow(0)
+    val hiddenAndExcludedCount: StateFlow<Int> = _hiddenAndExcludedCount.asStateFlow()
     
     // 兼容性：保留 mappings StateFlow（但不再使用）
     @Deprecated("不再使用，图片归属由系统相册决定")
@@ -242,6 +255,9 @@ class AlbumManager(private val context: Context) {
         saveMetadata(currentMetadata)
         _metadata.value = currentMetadata
         
+        // 更新隐藏/屏蔽图集数量
+        updateHiddenAndExcludedCounts(currentMetadata)
+        
         // 刷新图集列表
         refreshAlbumsFromSystem()
         
@@ -258,6 +274,9 @@ class AlbumManager(private val context: Context) {
             currentMetadata[albumId] = existing.copy(isHidden = false)
             saveMetadata(currentMetadata)
             _metadata.value = currentMetadata
+            
+            // 更新隐藏/屏蔽图集数量
+            updateHiddenAndExcludedCounts(currentMetadata)
             
             // 刷新图集列表
             refreshAlbumsFromSystem()
@@ -289,6 +308,9 @@ class AlbumManager(private val context: Context) {
         saveMetadata(currentMetadata)
         _metadata.value = currentMetadata
         
+        // 更新隐藏/屏蔽图集数量
+        updateHiddenAndExcludedCounts(currentMetadata)
+        
         Log.d(TAG, "Set album '$albumId' excludedFromRecommend=$excluded")
     }
 
@@ -311,6 +333,29 @@ class AlbumManager(private val context: Context) {
         return _metadata.value
             .filter { it.value.isExcludedFromRecommend }
             .keys
+    }
+    
+    /**
+     * 更新隐藏/屏蔽图集数量（内部方法）
+     */
+    private fun updateHiddenAndExcludedCounts(metadata: Map<String, AlbumMetadata>) {
+        val hiddenCount = metadata.count { it.value.isHidden }
+        val excludedCount = metadata.count { it.value.isExcludedFromRecommend }
+        _hiddenAlbumCount.value = hiddenCount
+        _excludedAlbumCount.value = excludedCount
+        _hiddenAndExcludedCount.value = hiddenCount + excludedCount
+    }
+    
+    /**
+     * 获取所有隐藏的图集列表
+     * 
+     * @return 隐藏的图集列表
+     */
+    fun getHiddenAlbums(): List<Album> {
+        val hiddenIds = _metadata.value
+            .filter { it.value.isHidden }
+            .keys
+        return _albums.value.filter { it.id in hiddenIds }
     }
 
     /**
@@ -692,14 +737,18 @@ class AlbumManager(private val context: Context) {
      * 初始化（从系统相册加载图集）
      */
     suspend fun initialize() = withContext(Dispatchers.IO) {
-        _metadata.value = loadMetadata()
+        val loadedMetadata = loadMetadata()
+        _metadata.value = loadedMetadata
         _sourceImages.value = loadSourceImages()
+        
+        // 初始化隐藏/屏蔽图集数量
+        updateHiddenAndExcludedCounts(loadedMetadata)
         
         // 初始化使用频率追踪器（用于智能排序）
         usageTracker.initialize()
         
         refreshAlbumsFromSystem()
-        Log.d(TAG, "AlbumManager initialized with system album integration, sourceImages=${_sourceImages.value.size} albums")
+        Log.d(TAG, "AlbumManager initialized with system album integration, sourceImages=${_sourceImages.value.size} albums, excludedAlbums=${_excludedAlbumCount.value}")
     }
 
     /**
@@ -758,15 +807,17 @@ class AlbumManager(private val context: Context) {
             return
         }
         
-        val current = _sourceImages.value.toMutableMap()
-        val uris = current.getOrPut(albumId) { mutableSetOf() }
-        uris.add(sourceUri)
-        current[albumId] = uris
-        _sourceImages.value = current
-        
-        // 持久化
-        saveSourceImages(current)
-        Log.d(TAG, "Recorded source image for album '$albumId': $sourceUri")
+        // 使用 update 保证原子性更新，避免并发写入时数据丢失
+        _sourceImages.update { current ->
+            val newMap = current.toMutableMap()
+            val uris = newMap.getOrPut(albumId) { mutableSetOf() }
+            uris.add(sourceUri)
+            newMap[albumId] = uris
+            // 持久化
+            saveSourceImages(newMap)
+            Log.d(TAG, "Recorded source image for album '$albumId': $sourceUri")
+            newMap
+        }
     }
     
     /**
@@ -791,23 +842,26 @@ class AlbumManager(private val context: Context) {
      * 清除已删除的原图记录
      */
     fun clearSourceImageRecords(albumId: String? = null, deletedUris: Set<String> = emptySet()) {
-        val current = _sourceImages.value.toMutableMap()
-        
-        if (albumId != null && deletedUris.isEmpty()) {
-            // 清除指定图集的所有记录
-            current.remove(albumId)
-        } else if (deletedUris.isNotEmpty()) {
-            // 清除指定的 URI
-            current.forEach { (key, uris) ->
-                uris.removeAll(deletedUris)
+        // 使用 update 保证原子性更新，避免并发写入时数据丢失
+        _sourceImages.update { current ->
+            val newMap = current.toMutableMap()
+            
+            if (albumId != null && deletedUris.isEmpty()) {
+                // 清除指定图集的所有记录
+                newMap.remove(albumId)
+            } else if (deletedUris.isNotEmpty()) {
+                // 清除指定的 URI
+                newMap.forEach { (_, uris) ->
+                    uris.removeAll(deletedUris)
+                }
+                // 移除空的图集
+                newMap.entries.removeIf { it.value.isEmpty() }
             }
-            // 移除空的图集
-            current.entries.removeIf { it.value.isEmpty() }
+            
+            saveSourceImages(newMap)
+            Log.d(TAG, "Cleared source image records: albumId=$albumId, deletedCount=${deletedUris.size}")
+            newMap
         }
-        
-        _sourceImages.value = current
-        saveSourceImages(current)
-        Log.d(TAG, "Cleared source image records: albumId=$albumId, deletedCount=${deletedUris.size}")
     }
     
     /**
@@ -1039,13 +1093,16 @@ class AlbumManager(private val context: Context) {
      * @return 被撤销的操作信息，如果队列为空返回 null
      */
     fun cancelLastPendingArchive(): PendingArchive? {
-        if (pendingArchiveQueue.isEmpty()) {
-            Log.d(TAG, "No pending archive to cancel")
-            return null
+        // 使用 synchronized 保证 isEmpty 检查和 removeAt 操作的原子性
+        synchronized(pendingArchiveQueue) {
+            if (pendingArchiveQueue.isEmpty()) {
+                Log.d(TAG, "No pending archive to cancel")
+                return null
+            }
+            val cancelled = pendingArchiveQueue.removeAt(pendingArchiveQueue.lastIndex)
+            Log.d(TAG, "Cancelled pending archive: imageId=${cancelled.imageId} -> album='${cancelled.albumName}'")
+            return cancelled
         }
-        val cancelled = pendingArchiveQueue.removeAt(pendingArchiveQueue.lastIndex)
-        Log.d(TAG, "Cancelled pending archive: imageId=${cancelled.imageId} -> album='${cancelled.albumName}'")
-        return cancelled
     }
 
     /**

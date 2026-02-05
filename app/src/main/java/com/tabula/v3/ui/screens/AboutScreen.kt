@@ -423,7 +423,7 @@ fun AboutScreen(
                 )
 
                 Text(
-                    text = "2026.2.2",
+                    text = "2026.2.6",
                     style = MaterialTheme.typography.bodySmall,
                     color = secondaryTextColor.copy(alpha = 0.8f)
                 )
