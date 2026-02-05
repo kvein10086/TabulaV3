@@ -9,6 +9,8 @@ composeBom = "2024.12.01"
 coil = "2.7.0"
 coroutines = "1.9.0"
 media3 = "1.5.1"
+junit = "4.13.2"
+robolectric = "4.12.2"
 
 [libraries]
 androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifinterface" }
@@ -48,6 +50,8 @@ media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "medi
 
 # Media Session (for Fluid Cloud / Live Activity)
 androidx-media = { group = "androidx.media", name = "media", version = "1.7.0" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

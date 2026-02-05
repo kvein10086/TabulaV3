@@ -120,6 +120,31 @@ data class MonthInfo(
     }
 }
 
+fun buildMonthInfos(allImages: List<ImageFile>): List<MonthInfo> {
+    if (allImages.isEmpty()) return emptyList()
+
+    val calendar = Calendar.getInstance()
+    return allImages.groupBy { image ->
+        calendar.timeInMillis = image.dateModified
+        val year = calendar.get(Calendar.YEAR)
+        val month = calendar.get(Calendar.MONTH) + 1  // Calendar.MONTH 是 0-11
+        "$year-$month"
+    }.map { (key, images) ->
+        val parts = key.split("-")
+        val year = parts[0].toInt()
+        val month = parts[1].toInt()
+        // 按时间倒序排列图片，取最新的作为封面
+        val sortedImages = images.sortedByDescending { it.dateModified }
+        MonthInfo(
+            year = year,
+            month = month,
+            imageCount = images.size,
+            coverImageId = sortedImages.firstOrNull()?.id,
+            images = sortedImages
+        )
+    }.sortedWith(compareByDescending<MonthInfo> { it.year }.thenByDescending { it.month })
+}
+
 /**
  * 图集清理选择底部弹窗
  * 
@@ -174,30 +199,7 @@ fun AlbumCleanupBottomSheet(
     
     // 从图片列表中提取月份分组（按时间倒序排列）
     val monthInfos = remember(allImages) {
-        if (allImages.isEmpty()) {
-            emptyList()
-        } else {
-            val calendar = Calendar.getInstance()
-            allImages.groupBy { image ->
-                calendar.timeInMillis = image.dateModified
-                val year = calendar.get(Calendar.YEAR)
-                val month = calendar.get(Calendar.MONTH) + 1  // Calendar.MONTH 是 0-11
-                "$year-$month"
-            }.map { (key, images) ->
-                val parts = key.split("-")
-                val year = parts[0].toInt()
-                val month = parts[1].toInt()
-                // 按时间倒序排列图片，取最新的作为封面
-                val sortedImages = images.sortedByDescending { it.dateModified }
-                MonthInfo(
-                    year = year,
-                    month = month,
-                    imageCount = images.size,
-                    coverImageId = sortedImages.firstOrNull()?.id,
-                    images = sortedImages
-                )
-            }.sortedWith(compareByDescending<MonthInfo> { it.year }.thenByDescending { it.month })
-        }
+        buildMonthInfos(allImages)
     }
     
     // 获取导航栏高度，用于底部内边距

@@ -549,6 +549,7 @@ fun TabulaApp(
             // 使用 imagesForSorting（排除已归类到 Tabula 图集的照片）
             // 这样已归类的照片不会再次出现在待整理列表中
             allImages = imagesForSorting,
+            allImagesForCleanup = allImages,
             batchSize = currentBatchSize,
             isLoading = isLoading,
             topBarDisplayMode = currentTopBarMode,
