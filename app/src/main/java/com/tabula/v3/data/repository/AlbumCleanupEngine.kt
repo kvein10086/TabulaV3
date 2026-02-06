@@ -297,6 +297,14 @@ class AlbumCleanupEngine(
         allImages: List<ImageFile>,
         excludeGroupIds: List<String> = emptyList()
     ): AlbumCleanupBatch? = withContext(Dispatchers.IO) {
+        // 切换图集时：更新 currentAlbumId 并清空过期的缓存
+        if (currentAlbumId != albumId) {
+            android.util.Log.d(TAG, "Album switched: $currentAlbumId -> $albumId, invalidating cached groups")
+            cachedGroups = null
+            currentAlbumId = albumId
+            preferences.currentCleanupAlbumId = albumId
+        }
+        
         // 获取或恢复相似组（使用 Mutex 保护，避免并发问题）
         val groups = cacheMutex.withLock {
             cachedGroups ?: run {

@@ -26,8 +26,8 @@ android {
         applicationId = "com.tabula.v3"
         minSdk = 31
         targetSdk = 36
-        versionCode = 2
-        versionName = "3.3.2-beta"
+        versionCode = 3
+        versionName = "3.3.2-beta0207"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

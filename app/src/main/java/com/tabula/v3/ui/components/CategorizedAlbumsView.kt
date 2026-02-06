@@ -41,6 +41,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
@@ -1305,6 +1306,9 @@ private fun DraggableAlbumsGridInternal(
                                 var touchStartScreenY by remember { mutableFloatStateOf(0f) }
                                 // ??????????????????????????????????
                                 var rawDragOffsetY by remember { mutableFloatStateOf(0f) }
+                                // 长按1秒自动进入多选模式的定时器
+                                var selectionTimerTriggered by remember { mutableStateOf(false) }
+                                var selectionTimerJob by remember { mutableStateOf<Job?>(null) }
                                 
                                 Box(
                                 modifier = Modifier
@@ -1351,16 +1355,33 @@ private fun DraggableAlbumsGridInternal(
                                                     dragOffsetY = 0f
                                                     rawDragOffsetY = 0f
                                                     hasDragged = false  // ??????????
+                                                    selectionTimerTriggered = false
                                                     // ???????????????????? Y ????
                                                     touchStartScreenY = cardScreenY + startOffset.y
                                                     currentTouchScreenY = touchStartScreenY
                                                     android.util.Log.d("DragScroll", "onDragStart: cardScreenY=$cardScreenY, startOffset.y=${startOffset.y}, touchStartScreenY=$touchStartScreenY")
                                                     onDraggingChange(true)
+                                                    // 启动长按1秒自动进入多选模式的定时器
+                                                    // detectDragGesturesAfterLongPress 约在400ms后触发 onDragStart，
+                                                    // 再等600ms达到约1秒总时长
+                                                    selectionTimerJob?.cancel()
+                                                    selectionTimerJob = coroutineScope.launch {
+                                                        delay(600L)
+                                                        if (!hasDragged && !selectionTimerTriggered) {
+                                                            selectionTimerTriggered = true
+                                                            HapticFeedback.heavyTap(context)
+                                                            onStartSelection(album.id)
+                                                        }
+                                                    }
                                                 },
                                                 onDragEnd = {
                                                     // ?????????
+                                                    selectionTimerJob?.cancel()
+                                                    selectionTimerJob = null
                                                     currentTouchScreenY = 0f
-                                                    if (!hasDragged) {
+                                                    if (selectionTimerTriggered) {
+                                                        // 已通过定时器进入多选模式，仅做清理
+                                                    } else if (!hasDragged) {
                                                         HapticFeedback.lightTap(context)
                                                         onStartSelection(album.id)
                                                     } else {
@@ -1383,10 +1404,13 @@ private fun DraggableAlbumsGridInternal(
                                                     dragOffsetY = 0f
                                                     rawDragOffsetY = 0f
                                                     hasDragged = false
+                                                    selectionTimerTriggered = false
                                                     onDraggingChange(false)
                                                 },
                                                 onDragCancel = {
                                                     // ?????????
+                                                    selectionTimerJob?.cancel()
+                                                    selectionTimerJob = null
                                                     currentTouchScreenY = 0f
                                                     draggingAlbumId = null
                                                     draggingStartIndex = -1
@@ -1395,18 +1419,26 @@ private fun DraggableAlbumsGridInternal(
                                                     dragOffsetY = 0f
                                                     rawDragOffsetY = 0f
                                                     hasDragged = false
+                                                    selectionTimerTriggered = false
                                                     onDraggingChange(false)
                                                 },
                                                 onDrag = { change, dragAmount ->
+                                                    // 定时器已触发多选，忽略后续拖动
+                                                    if (selectionTimerTriggered) {
+                                                        change.consume()
+                                                        return@detectDragGesturesAfterLongPress
+                                                    }
                                                     change.consume()
                                                     dragOffsetX += dragAmount.x
                                                     dragOffsetY += dragAmount.y
                                                     // ??????????????????????????????????
                                                     rawDragOffsetY += dragAmount.y
-                                                    // ?????????????????????????????????
-                                                    val dragThreshold = 10f  // 10???????
+                                                    // 拖动阈值：40像素，避免手指微小抖动误判为拖动
+                                                    val dragThreshold = 40f
                                                     if (!hasDragged && (kotlin.math.abs(dragOffsetX) > dragThreshold || kotlin.math.abs(dragOffsetY) > dragThreshold)) {
                                                         hasDragged = true
+                                                        // 用户确实在拖动，取消多选定时器
+                                                        selectionTimerJob?.cancel()
                                                     }
                                                     // ??????????????? Y ??????????????????
                                                     // ??????????????????????????

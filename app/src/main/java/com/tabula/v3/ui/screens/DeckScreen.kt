@@ -80,6 +80,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tabula.v3.ui.components.TagPosition
@@ -741,6 +742,7 @@ fun DeckScreen(
                 // 切换到新图集
                 onSelectedCleanupAlbumChange(nextAlbum)
                 albumCleanupEngine.exitCleanupMode()  // 先退出当前模式
+                preloadedNextBatch = null  // 清空旧图集的预加载数据
                 
                 // 获取新图集的图片
                 val albumImages = resolveAlbumCleanupImages(nextAlbum, allImagesForCleanup)
@@ -2364,67 +2366,76 @@ private fun AlbumsGridContent(
                 ) {
                     if (isSelectionMode) {
                         // ========== 多选模式顶部栏 ==========
-                        // 左侧关闭按钮
-                        IconButton(
-                            onClick = {
-                                HapticFeedback.lightTap(context)
-                                isSelectionMode = false
-                                selectedAlbumIds = emptySet()
-                            },
-                            modifier = Modifier.align(Alignment.CenterStart)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Close,
-                                contentDescription = "退出选择",
-                                tint = textColor,
-                                modifier = Modifier.size(24.dp)
-                            )
-                        }
-
-                        // 中间标题
-                        Text(
-                            text = "共 ${selectableIds.size} 图集 · 已选 ${selectedAlbumIds.size} 个",
-                            color = textColor,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.align(Alignment.Center)
-                        )
-
-                        // 右侧按钮组
                         Row(
-                            modifier = Modifier.align(Alignment.CenterEnd),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            // 全选/取消全选
-                            val allSelected = selectableIds.isNotEmpty() && selectedAlbumIds.containsAll(selectableIds)
-                            TextButton(
+                            // 左侧关闭按钮
+                            IconButton(
                                 onClick = {
                                     HapticFeedback.lightTap(context)
-                                    selectedAlbumIds = selectAllOrClear(selectableIds.toList(), selectedAlbumIds)
+                                    isSelectionMode = false
+                                    selectedAlbumIds = emptySet()
                                 }
                             ) {
-                                Text(
-                                    text = if (allSelected) "取消全选" else "全选",
-                                    color = Color(0xFF007AFF),
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Medium
+                                Icon(
+                                    imageVector = Icons.Outlined.Close,
+                                    contentDescription = "退出选择",
+                                    tint = textColor,
+                                    modifier = Modifier.size(24.dp)
                                 )
                             }
-                            // 操作按钮
-                            TextButton(
-                                onClick = {
-                                    HapticFeedback.lightTap(context)
-                                    showBulkActionDialog = true
-                                },
-                                enabled = selectedAlbumIds.isNotEmpty()
+
+                            // 中间标题 - 使用 weight 避免重叠
+                            Text(
+                                text = "共 ${selectableIds.size} 图集 · 已选 ${selectedAlbumIds.size}",
+                                color = textColor,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 8.dp),
+                                textAlign = TextAlign.Center
+                            )
+
+                            // 右侧按钮组
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = "操作",
-                                    color = if (selectedAlbumIds.isNotEmpty()) Color(0xFF007AFF) else Color(0xFF8E8E93),
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Medium
-                                )
+                                // 全选/取消全选
+                                val allSelected = selectableIds.isNotEmpty() && selectedAlbumIds.containsAll(selectableIds)
+                                TextButton(
+                                    onClick = {
+                                        HapticFeedback.lightTap(context)
+                                        selectedAlbumIds = selectAllOrClear(selectableIds.toList(), selectedAlbumIds)
+                                    }
+                                ) {
+                                    Text(
+                                        text = if (allSelected) "取消" else "全选",
+                                        color = Color(0xFF007AFF),
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                                // 操作按钮
+                                TextButton(
+                                    onClick = {
+                                        HapticFeedback.lightTap(context)
+                                        showBulkActionDialog = true
+                                    },
+                                    enabled = selectedAlbumIds.isNotEmpty()
+                                ) {
+                                    Text(
+                                        text = "操作",
+                                        color = if (selectedAlbumIds.isNotEmpty()) Color(0xFF007AFF) else Color(0xFF8E8E93),
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
                             }
                         }
                     } else {

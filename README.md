@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Platform-Android-green?style=flat-square" alt="Platform">
-  <img src="https://img.shields.io/badge/Version-3.3.1--beta-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/Version-3.3.2--beta0207-blue?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/API-34%2B-orange?style=flat-square" alt="Min SDK">
 </p>
 
@@ -76,7 +76,7 @@
 
 感谢以下朋友的支持（不按时间排序）：
 
-[@Summer_233](https://github.com/tanbq-code) | @WIdei | @柴郡 | @k
+[@Summer_233](https://github.com/tanbq-code) | @WIdei | @柴郡 | @k | @辰小筱 | @Orion
 
 ---
 
