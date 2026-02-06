@@ -262,12 +262,60 @@ class AppPreferences(context: Context) {
         }
 
     /**
+     * 屏蔽人像功能开关（实验室功能）
+     * 启用后，浏览卡片时自动跳过包含人脸的照片
+     */
+    var faceBlockEnabled: Boolean
+        get() = prefs.getBoolean(KEY_FACE_BLOCK_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_FACE_BLOCK_ENABLED, value).apply()
+
+    /**
      * 是否已完成引导流程
      * 首次启动时为 false，完成引导后设为 true
      */
     var hasCompletedOnboarding: Boolean
         get() = prefs.getBoolean(KEY_HAS_COMPLETED_ONBOARDING, false)
         set(value) = prefs.edit().putBoolean(KEY_HAS_COMPLETED_ONBOARDING, value).apply()
+
+    // ==================== 智能排序设置 ====================
+
+    /**
+     * 智能排序总开关
+     * 启用后根据使用频率自动调整图集标签排序
+     * 关闭后始终使用手动排序
+     */
+    var smartSortEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SMART_SORT_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(KEY_SMART_SORT_ENABLED, value).apply()
+
+    /**
+     * 智能排序 - 时间衰减因子
+     * 控制旧使用记录的影响力衰减速度
+     * 范围：0.01（极慢衰减）~ 0.20（快速衰减），默认 0.05
+     * 值越大，最近的使用行为权重越高
+     */
+    var smartSortTimeDecay: Float
+        get() = prefs.getFloat(KEY_SMART_SORT_TIME_DECAY, 0.05f)
+        set(value) = prefs.edit().putFloat(KEY_SMART_SORT_TIME_DECAY, value.coerceIn(0.01f, 0.20f)).apply()
+
+    /**
+     * 智能排序 - 连续归类抑制因子
+     * 控制连续向同一图集归类时的权重衰减
+     * 范围：0.3（强抑制）~ 1.0（无抑制），默认 0.7
+     * 值越小，连续归类同一图集时排名提升越缓慢
+     */
+    var smartSortConsecutiveDecay: Float
+        get() = prefs.getFloat(KEY_SMART_SORT_CONSECUTIVE_DECAY, 0.7f)
+        set(value) = prefs.edit().putFloat(KEY_SMART_SORT_CONSECUTIVE_DECAY, value.coerceIn(0.3f, 1.0f)).apply()
+
+    /**
+     * 智能排序 - 手动排序锁定天数
+     * 用户手动拖拽排序后，锁定期内保持用户排序不受智能排序影响
+     * 范围：1 ~ 30 天，默认 7 天
+     */
+    var smartSortLockDays: Int
+        get() = prefs.getInt(KEY_SMART_SORT_LOCK_DAYS, 7)
+        set(value) = prefs.edit().putInt(KEY_SMART_SORT_LOCK_DAYS, value.coerceIn(1, 30)).apply()
 
     // ==================== 图集标签设置 ====================
 
@@ -923,6 +971,34 @@ class AppPreferences(context: Context) {
         return albumCleanupPrefs.contains("group_images_${albumId}_$firstGroupId")
     }
 
+    // ==================== "其他图集"收纳设置 ====================
+
+    /**
+     * 用户手动从"其他图集"中取出的图集名称集合（pinned）
+     * 这些图集始终显示在主图集列表中，不会被收纳
+     */
+    var pinnedAlbumNames: Set<String>
+        get() = prefs.getStringSet(KEY_PINNED_ALBUM_NAMES, emptySet()) ?: emptySet()
+        set(value) = prefs.edit().putStringSet(KEY_PINNED_ALBUM_NAMES, value).apply()
+
+    /**
+     * 将图集从"其他图集"中取出（pin）
+     */
+    fun pinAlbum(name: String) {
+        val current = pinnedAlbumNames.toMutableSet()
+        current.add(name)
+        pinnedAlbumNames = current
+    }
+
+    /**
+     * 将图集放回"其他图集"中（unpin）
+     */
+    fun unpinAlbum(name: String) {
+        val current = pinnedAlbumNames.toMutableSet()
+        current.remove(name)
+        pinnedAlbumNames = current
+    }
+
     companion object {
         private const val PREFS_NAME = "tabula_prefs"
         private const val KEY_SORT_ORDER = "sort_order"
@@ -946,6 +1022,7 @@ class AppPreferences(context: Context) {
         private const val KEY_CARD_STYLE_MODE = "card_style_mode"
         private const val KEY_SWIPE_STYLE = "swipe_style"
         private const val KEY_LIQUID_GLASS_LAB_ENABLED = "liquid_glass_lab_enabled"
+        private const val KEY_FACE_BLOCK_ENABLED = "face_block_enabled"
         private const val KEY_HAS_COMPLETED_ONBOARDING = "has_completed_onboarding"
         
         // 快捷操作按钮相关
@@ -958,8 +1035,25 @@ class AppPreferences(context: Context) {
         private const val KEY_TAG_SWITCH_SPEED = "tag_switch_speed"
         private const val KEY_TAGS_PER_ROW = "tags_per_row"
         
+        // 智能排序相关
+        private const val KEY_SMART_SORT_ENABLED = "smart_sort_enabled"
+        private const val KEY_SMART_SORT_TIME_DECAY = "smart_sort_time_decay"
+        private const val KEY_SMART_SORT_CONSECUTIVE_DECAY = "smart_sort_consecutive_decay"
+        private const val KEY_SMART_SORT_LOCK_DAYS = "smart_sort_lock_days"
+        
         // 图集标签设置相关
         private const val KEY_SOURCE_IMAGE_DELETION_STRATEGY = "source_image_deletion_strategy"
+        
+        // "其他图集"收纳相关
+        private const val KEY_PINNED_ALBUM_NAMES = "pinned_album_names"
+
+        // 收纳阈值常量
+        /** 系统图集总数超过此值时启用收纳 */
+        const val OTHER_ALBUMS_TRIGGER_THRESHOLD = 30
+        /** 图片数 <= 此值的系统图集会被收纳到"其他" */
+        const val OTHER_ALBUMS_SMALL_THRESHOLD = 5
+        /** 收纳比例上限：如果被收纳的图集超过总数的此比例，则提高 SMALL_THRESHOLD 直到满足 */
+        const val OTHER_ALBUMS_MAX_RATIO = 0.80f
 
         private const val PICK_TIMESTAMPS_PREFS_NAME = "tabula_pick_timestamps"
         private const val SIMILAR_GROUPS_PREFS_NAME = "tabula_similar_groups"
@@ -974,6 +1068,7 @@ class AppPreferences(context: Context) {
         const val DEFAULT_TAGS_PER_ROW = 7
         val BATCH_SIZE_OPTIONS = listOf(5, 10, 15, 20, 30, 50)
         val TAGS_PER_ROW_OPTIONS = listOf(4, 5, 6, 7, 8, 9, 10)
+        val SMART_SORT_LOCK_DAYS_OPTIONS = listOf(1, 3, 5, 7, 14, 30)
         
         @Volatile
         private var instance: AppPreferences? = null

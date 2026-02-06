@@ -1,10 +1,11 @@
-﻿package com.tabula.v3.ui.util
+package com.tabula.v3.ui.util
 
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -103,6 +104,13 @@ class StringDragSelectState<T>(
     }
 }
 
+/**
+ * 创建并记住 StringDragSelectState
+ *
+ * 使用 rememberUpdatedState 确保回调和数据始终指向最新值，
+ * 而 State 对象本身只创建一次，不会因 selectedIds 变化而重建。
+ * 这样 itemBounds 不会丢失，拖动手势也不会被中断。
+ */
 @Composable
 fun <T> rememberStringDragSelectState(
     items: List<T>,
@@ -111,13 +119,18 @@ fun <T> rememberStringDragSelectState(
     onSelectionChange: (Set<String>) -> Unit,
     onEnterSelectionMode: () -> Unit
 ): StringDragSelectState<T> {
-    return remember(items, selectedIds) {
+    val updatedItems = rememberUpdatedState(items)
+    val updatedSelectedIds = rememberUpdatedState(selectedIds)
+    val updatedOnSelectionChange = rememberUpdatedState(onSelectionChange)
+    val updatedOnEnterSelectionMode = rememberUpdatedState(onEnterSelectionMode)
+
+    return remember {
         StringDragSelectState(
-            items = { items },
+            items = { updatedItems.value },
             itemKey = itemKey,
-            selectedIds = { selectedIds },
-            onSelectionChange = onSelectionChange,
-            onEnterSelectionMode = onEnterSelectionMode
+            selectedIds = { updatedSelectedIds.value },
+            onSelectionChange = { updatedOnSelectionChange.value(it) },
+            onEnterSelectionMode = { updatedOnEnterSelectionMode.value() }
         )
     }
 }

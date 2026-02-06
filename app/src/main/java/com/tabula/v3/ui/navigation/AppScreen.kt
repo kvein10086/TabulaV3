@@ -19,6 +19,7 @@ enum class AppScreen {
     LAB,                 // 实验室
     REMINDER_SETTINGS,   // 提醒设置
     HIDDEN_ALBUMS,       // 隐藏与屏蔽图集管理
+    OTHER_ALBUMS,        // 其他图集（收纳的小图集）
     PRIVACY_POLICY,      // 隐私政策
     TUTORIAL             // 使用教程
 }

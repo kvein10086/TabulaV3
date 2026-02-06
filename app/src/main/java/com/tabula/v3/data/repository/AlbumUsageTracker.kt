@@ -127,11 +127,28 @@ class AlbumUsageTracker(private val context: Context) {
     }
 
     /**
-     * 计算所有图集的使用得分
+     * 计算所有图集的使用得分（使用默认参数）
      * 
      * @return Map<albumId, score>，得分越高排名越靠前
      */
     fun getAlbumScores(): Map<String, Double> {
+        return getAlbumScores(
+            timeDecayFactor = TIME_DECAY_FACTOR,
+            consecutiveDecayFactor = CONSECUTIVE_DECAY
+        )
+    }
+
+    /**
+     * 计算所有图集的使用得分（使用自定义参数）
+     * 
+     * @param timeDecayFactor 时间衰减因子，值越大衰减越快
+     * @param consecutiveDecayFactor 连续归类衰减因子，值越小抑制越强
+     * @return Map<albumId, score>，得分越高排名越靠前
+     */
+    fun getAlbumScores(
+        timeDecayFactor: Double,
+        consecutiveDecayFactor: Double
+    ): Map<String, Double> {
         val now = System.currentTimeMillis()
         val scores = mutableMapOf<String, Double>()
         
@@ -149,7 +166,7 @@ class AlbumUsageTracker(private val context: Context) {
             }
             
             // 计算时间衰减 + 连续抑制得分
-            scores[albumId] = calculateScore(records, now)
+            scores[albumId] = calculateScore(records, now, timeDecayFactor, consecutiveDecayFactor)
         }
         
         return scores
@@ -161,10 +178,20 @@ class AlbumUsageTracker(private val context: Context) {
      * 算法：
      * 1. 按时间倒序遍历记录
      * 2. 每条记录的基础分 = 1 / (1 + α * hours_elapsed)
-     * 3. 连续归类时，权重递减：weight = max(0.1, 0.7^n)
+     * 3. 连续归类时，权重递减：weight = max(minWeight, decay^n)
      * 4. 最终得分 = Σ (基础分 * 连续权重)
+     * 
+     * @param records 该图集的使用记录
+     * @param now 当前时间戳
+     * @param timeDecayFactor 时间衰减因子
+     * @param consecutiveDecayFactor 连续归类衰减因子
      */
-    private fun calculateScore(records: List<AlbumUsageRecord>, now: Long): Double {
+    private fun calculateScore(
+        records: List<AlbumUsageRecord>,
+        now: Long,
+        timeDecayFactor: Double = TIME_DECAY_FACTOR,
+        consecutiveDecayFactor: Double = CONSECUTIVE_DECAY
+    ): Double {
         if (records.isEmpty()) return 0.0
         
         var score = 0.0
@@ -177,14 +204,14 @@ class AlbumUsageTracker(private val context: Context) {
         for (record in sortedRecords) {
             // 计算时间衰减
             val hoursElapsed = (now - record.timestamp) / 3600_000.0
-            val timeWeight = 1.0 / (1.0 + TIME_DECAY_FACTOR * hoursElapsed)
+            val timeWeight = 1.0 / (1.0 + timeDecayFactor * hoursElapsed)
             
             // 检测连续归类
             if (lastTimestamp != null) {
                 val timeDiff = lastTimestamp - record.timestamp
                 if (timeDiff < CONSECUTIVE_THRESHOLD_MS) {
                     // 连续操作，递减权重
-                    consecutiveWeight = (consecutiveWeight * CONSECUTIVE_DECAY)
+                    consecutiveWeight = (consecutiveWeight * consecutiveDecayFactor)
                         .coerceAtLeast(CONSECUTIVE_MIN_WEIGHT)
                 } else {
                     // 非连续操作，重置权重

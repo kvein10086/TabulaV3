@@ -40,6 +40,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -58,6 +59,7 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DriveFileMove
 import androidx.compose.material.icons.rounded.FileCopy
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.outlined.SwapVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -172,6 +174,21 @@ fun AlbumViewScreen(
     // 使用 Map 优化查找，将 O(n) 降为 O(1)
     val imageMap = remember(allImages) { allImages.associateBy { it.id } }
 
+    // 响应 allImages 变化：当图片被删除时，自动从 albumImages 中移除
+    // 这解决了在图集中删除图片后不能实时刷新的问题
+    LaunchedEffect(allImages) {
+        if (albumImages.isNotEmpty()) {
+            // 获取当前 allImages 中存在的图片 ID 集合
+            val validImageIds = allImages.map { it.id }.toSet()
+            // 过滤掉已不存在的图片
+            val filteredImages = albumImages.filter { it.id in validImageIds }
+            // 只有在确实有图片被删除时才更新状态，避免不必要的重组
+            if (filteredImages.size != albumImages.size) {
+                albumImages = filteredImages
+            }
+        }
+    }
+    
     // 加载图片逻辑 - 优化版：渐进式加载 + Map 查找 + 协程取消检查
     LaunchedEffect(currentAlbum?.id) {
         if (currentAlbum != null) {
@@ -255,10 +272,10 @@ fun AlbumViewScreen(
                 isDarkTheme = isDarkTheme,
                 showHdrBadges = showHdrBadges,
                 showMotionBadges = showMotionBadges,
-                onImageClick = { image, sourceRect ->
-                    val index = albumImages.indexOf(image).coerceAtLeast(0)
+                onImageClick = { image, sourceRect, sortedList ->
+                    val index = sortedList.indexOf(image).coerceAtLeast(0)
                     viewerState = SwipeableViewerState(
-                        images = albumImages,
+                        images = sortedList,
                         initialIndex = index,
                         sourceRect = sourceRect
                     )
@@ -337,7 +354,7 @@ private fun AlbumContentView(
     isDarkTheme: Boolean,
     showHdrBadges: Boolean = false,
     showMotionBadges: Boolean = false,
-    onImageClick: (ImageFile, SourceRect) -> Unit,
+    onImageClick: (ImageFile, SourceRect, List<ImageFile>) -> Unit,
     onEditClick: () -> Unit,
     onHideClick: (() -> Unit)? = null,
     onUnhideClick: (() -> Unit)? = null,
@@ -354,7 +371,20 @@ private fun AlbumContentView(
 ) {
     val context = LocalContext.current
     var showMenu by remember { mutableStateOf(false) }
-    val gridState = rememberLazyGridState()
+    // 排序状态：true = 最新在前（倒序），false = 最早在前（正序）
+    var sortDescending by remember { mutableStateOf(true) }
+    
+    // 排序变化时重置 grid state，直接从顶部开始
+    val gridState = remember(sortDescending) { LazyGridState() }
+    
+    // 排序后的图片列表
+    val sortedImages = remember(images, sortDescending) {
+        if (sortDescending) {
+            images.sortedByDescending { it.dateModified }
+        } else {
+            images.sortedBy { it.dateModified }
+        }
+    }
     
     // 多选模式状态
     var isSelectionMode by remember { mutableStateOf(false) }
@@ -374,9 +404,9 @@ private fun AlbumContentView(
     var showDeleteImagesConfirm by remember { mutableStateOf(false) }
     
     // 滑动多选状态
-    val dragSelectState = remember(images) {
+    val dragSelectState = remember(sortedImages) {
         DragSelectState(
-            items = { images },
+            items = { sortedImages },
             itemKey = { it.id },
             selectedIds = { selectedImageIds },
             onSelectionChange = { newSelection ->
@@ -528,14 +558,25 @@ private fun AlbumContentView(
                         )
                     }
 
-                    Box(modifier = Modifier.wrapContentSize(Alignment.TopEnd)) {
-                        IconButton(onClick = { showMenu = true }) {
-                            Icon(
-                                imageVector = Icons.Rounded.MoreVert,
-                                contentDescription = "更多",
-                                tint = textColor
-                            )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // 排序按钮
+                        if (images.size > 1) {
+                            IconButton(onClick = { sortDescending = !sortDescending }) {
+                                Icon(
+                                    imageVector = Icons.Outlined.SwapVert,
+                                    contentDescription = if (sortDescending) "当前：最新在前" else "当前：最早在前",
+                                    tint = secondaryTextColor
+                                )
+                            }
                         }
+                        Box(modifier = Modifier.wrapContentSize(Alignment.TopEnd)) {
+                            IconButton(onClick = { showMenu = true }) {
+                                Icon(
+                                    imageVector = Icons.Rounded.MoreVert,
+                                    contentDescription = "更多",
+                                    tint = textColor
+                                )
+                            }
 
                         DropdownMenu(
                             expanded = showMenu,
@@ -713,6 +754,7 @@ private fun AlbumContentView(
                                 )
                             }
                         }
+                        }
                     }
                 }
             }
@@ -804,7 +846,7 @@ private fun AlbumContentView(
                 // 注：LazyVerticalGrid 的预取由 Compose 自动管理
                 // 图片加载优化主要通过 Coil 的缓存策略实现
             ) {
-                items(images, key = { it.id }) { image ->
+                items(sortedImages, key = { it.id }) { image ->
                     // 使用 Box 包装并注册位置（窗口坐标系），支持滑动多选
                     Box(
                         modifier = Modifier.onGloballyPositioned { coordinates ->
@@ -826,7 +868,7 @@ private fun AlbumContentView(
                             showHdrBadge = showHdrBadges,
                             showMotionBadge = showMotionBadges,
                             onClick = { sourceRect ->
-                                onImageClick(image, sourceRect)
+                                onImageClick(image, sourceRect, sortedImages)
                             },
                             onSetCover = onSetCover?.let { callback ->
                                 { callback(image.id) }

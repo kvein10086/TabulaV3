@@ -53,6 +53,7 @@ import androidx.compose.material.icons.outlined.Vibration
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.FaceRetouchingOff
 import androidx.compose.material.icons.outlined.PanTool
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Science
@@ -349,10 +350,10 @@ fun SettingsScreen(
                 SettingsItem(
                     icon = Icons.Outlined.VisibilityOff,
                     iconTint = Color(0xFFFF9500), // Orange-yellow
-                    title = "隐藏与屏蔽",
+                    title = "图集标签管理",
                     value = run {
                         val total = hiddenAlbumCount + excludedAlbumCount
-                        if (total > 0) "$total 个图集" else "无"
+                        if (total > 0) "$total 个图集" else ""
                     },
                     textColor = textColor,
                     secondaryTextColor = secondaryTextColor,
@@ -1174,6 +1175,12 @@ fun LabScreen(
     onTagSelectionModeChange: (TagSelectionMode) -> Unit = {},
     onTagSwitchSpeedChange: (Float) -> Unit = {},
     onTagsPerRowChange: (Int) -> Unit = {},
+    // 屏蔽人像设置
+    faceBlockEnabled: Boolean = false,
+    onFaceBlockEnabledChange: (Boolean) -> Unit = {},
+    faceBlockStatsText: String = "",
+    faceBlockErrorText: String = "",
+    onClearFaceBlockCache: () -> Unit = {},
     onNavigateBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1303,6 +1310,90 @@ fun LabScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = secondaryTextColor.copy(alpha = 0.7f)
                     )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(28.dp))
+
+            // ========== 屏蔽人像 ==========
+            SectionHeader("屏蔽人像", textColor)
+            SettingsGroup(cardColor) {
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.FaceRetouchingOff,
+                    iconTint = Color(0xFFFF6B6B), // 柔和红色
+                    title = "屏蔽人像照片",
+                    textColor = textColor,
+                    checked = faceBlockEnabled,
+                    onCheckedChange = { enabled ->
+                        HapticFeedback.lightTap(context)
+                        onFaceBlockEnabledChange(enabled)
+                    }
+                )
+
+                // 功能说明
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = if (faceBlockEnabled && (faceBlockStatsText.isNotEmpty() || faceBlockErrorText.isNotEmpty())) 4.dp else 12.dp)
+                ) {
+                    Text(
+                        text = "开启后浏览卡片时将自动跳过包含人像的照片，适合在公共场合浏览或只想看风景/物品照片",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor.copy(alpha = 0.7f)
+                    )
+                }
+
+                // 错误/警告信息（检测引擎不可用或连续失败时显示）
+                if (faceBlockEnabled && faceBlockErrorText.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .padding(bottom = 8.dp)
+                    ) {
+                        Text(
+                            text = faceBlockErrorText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFFF9F0A).copy(alpha = 0.9f) // 警告橙色
+                        )
+                    }
+                }
+
+                // 统计信息（仅在启用且有数据时显示）
+                if (faceBlockEnabled && faceBlockStatsText.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .padding(bottom = 12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = faceBlockStatsText,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF30D158).copy(alpha = 0.9f) // 绿色
+                            )
+                            // 清除缓存 & 重置按钮
+                            Text(
+                                text = "重置",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                color = secondaryTextColor.copy(alpha = 0.5f),
+                                modifier = Modifier
+                                    .clickable {
+                                        HapticFeedback.lightTap(context)
+                                        onClearFaceBlockCache()
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
                 }
             }
 

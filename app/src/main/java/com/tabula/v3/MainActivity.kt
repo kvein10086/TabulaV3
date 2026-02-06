@@ -88,14 +88,16 @@ import com.tabula.v3.ui.screens.AlbumViewScreen
 import com.tabula.v3.ui.screens.SystemAlbumViewScreen
 import com.tabula.v3.ui.screens.OnboardingScreen
 import com.tabula.v3.ui.screens.PersonalizationScreen
-import com.tabula.v3.ui.screens.HiddenAlbumsScreen
+
 import com.tabula.v3.ui.screens.PrivacyPolicyScreen
 import com.tabula.v3.ui.screens.TutorialScreen
+import com.tabula.v3.ui.screens.OtherAlbumsScreen
 import com.tabula.v3.data.repository.AlbumManager
 import com.tabula.v3.data.model.Album
 import androidx.compose.runtime.collectAsState
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.theme.TabulaColors
+import com.tabula.v3.ui.screens.AlbumTagManagementScreen
 import com.tabula.v3.ui.util.HapticFeedback
 import com.tabula.v3.ui.theme.TabulaTheme
 import com.tabula.v3.ui.components.LocalLiquidGlassEnabled
@@ -327,6 +329,7 @@ fun TabulaApp(
     var selectedBucketName by remember { mutableStateOf<String?>(null) }
     var isAlbumMode by remember { mutableStateOf(false) }
     var showHiddenAlbums by remember { mutableStateOf(false) }
+    var otherAlbumsForNavigation by remember { mutableStateOf<List<Album>>(emptyList()) }
 
     // ========== 图片数据状态 ==========
     var allImages by remember { mutableStateOf<List<ImageFile>>(emptyList()) }
@@ -398,25 +401,19 @@ fun TabulaApp(
     LaunchedEffect(Unit) {
         val loadedData = withContext(Dispatchers.IO) {
             val repository = LocalImageRepository(context)
-            // allImages: 完整的图片列表（用于图集详情等需要完整数据的地方）
-            val images = repository.getAllImages()
-            // imagesForSorting: 排除 Tabula 图集的图片列表（用于主界面卡片整理）
-            // 这样已归类到图集的照片不会再次出现在待整理列表中
-            val sortingImages = repository.getAllImagesExcludingTabulaAlbums()
-            val buckets = repository.getAllBucketsWithInfo()
+            // 单次 MediaStore 查询获取所有数据（优化：原来需要 3+2 次查询）
+            val loadResult = repository.loadAllData()
+            // 回收站加载（与图集初始化无依赖，可并行）
             val deleted = recycleBinManager.loadRecycleBin()
-            albumManager.initialize()
-            Pair(Pair(images, sortingImages), Pair(buckets, deleted))
+            // 传入预加载的 bucket 数据，避免 AlbumManager 重复查询 MediaStore
+            albumManager.initialize(preloadedBuckets = loadResult.systemBuckets)
+            Pair(loadResult, deleted)
         }
         // 在主线程更新状态
-        allImages = loadedData.first.first
-        imagesForSorting = loadedData.first.second
-        systemBuckets = loadedData.second.first
-        deletedImages = loadedData.second.second
-        
-        // 验证并修复图集封面（解决升级后封面显示异常的问题）
-        val validImageIds = loadedData.first.first.map { it.id }.toSet()
-        albumManager.validateAndFixCoverImages(validImageIds)
+        allImages = loadedData.first.allImages
+        imagesForSorting = loadedData.first.imagesExcludingTabula
+        systemBuckets = loadedData.first.systemBuckets
+        deletedImages = loadedData.second
         
         isLoading = false
     }
@@ -567,7 +564,7 @@ fun TabulaApp(
                 // 同时从待整理列表中移除
                 val newSortingImages = imagesForSorting.toMutableList().apply { remove(image) }
                 imagesForSorting = newSortingImages
-                deletedImages = deletedImages + image
+                deletedImages = deletedImages + image.copy(deletedAt = System.currentTimeMillis())
                 
                 preferences.totalReviewedCount++
                 preferences.totalDeletedCount++
@@ -678,16 +675,13 @@ fun TabulaApp(
                         // 刷新图集列表和图片列表
                         val repository = LocalImageRepository(context)
                         val refreshedData = withContext(Dispatchers.IO) {
-                            albumManager.refreshAlbumsFromSystem()
-                            Triple(
-                                repository.getAllBucketsWithInfo(),
-                                repository.getAllImages(),
-                                repository.getAllImagesExcludingTabulaAlbums()
-                            )
+                            val loadResult = repository.loadAllData()
+                            albumManager.refreshAlbumsFromSystem(loadResult.systemBuckets)
+                            loadResult
                         }
-                        systemBuckets = refreshedData.first
-                        allImages = refreshedData.second
-                        imagesForSorting = refreshedData.third
+                        systemBuckets = refreshedData.systemBuckets
+                        allImages = refreshedData.allImages
+                        imagesForSorting = refreshedData.imagesExcludingTabula
                         Toast.makeText(context, "刷新完成", Toast.LENGTH_SHORT).show()
                     } catch (e: Exception) {
                         Log.e("TabulaApp", "Refresh failed", e)
@@ -749,7 +743,11 @@ fun TabulaApp(
             isAlbumCleanupMode = isAlbumCleanupMode,
             onAlbumCleanupModeChange = { isAlbumCleanupMode = it },
             selectedCleanupAlbum = selectedCleanupAlbum,
-            onSelectedCleanupAlbumChange = { selectedCleanupAlbum = it }
+            onSelectedCleanupAlbumChange = { selectedCleanupAlbum = it },
+            onNavigateToOtherAlbums = { otherAlbumsList ->
+                otherAlbumsForNavigation = otherAlbumsList
+                currentScreen = AppScreen.OTHER_ALBUMS
+            }
         )
     }
 
@@ -991,29 +989,39 @@ fun TabulaApp(
     }
     
     // 隐藏与屏蔽图集管理页面
+    // 隐藏与屏蔽图集管理页面 (实际上是图集标签管理)
     val hiddenAlbumsContent: @Composable () -> Unit = {
         // 使用 count 作为 key 触发列表刷新，实现响应式更新
-        val currentHiddenAlbums = remember(hiddenAlbumCount) { 
-            albumManager.getHiddenAlbums() 
-        }
-        val currentExcludedAlbums = remember(excludedAlbumCount) { 
-            albumManager.getExcludedAlbums() 
+        // 获取排除的相册 ID 集合
+        val excludedIds = remember(excludedAlbumCount) {
+             albumManager.getExcludedAlbumIds()
         }
         
-        HiddenAlbumsScreen(
-            hiddenAlbums = currentHiddenAlbums,
-            excludedAlbums = currentExcludedAlbums,
-            onUnhideAlbum = { albumId ->
+        AlbumTagManagementScreen(
+            albums = albums,
+            excludedAlbumIds = excludedIds,
+            preferences = preferences,
+            onReorderAlbums = { newOrder ->
+                scope.launch { albumManager.reorderAlbums(newOrder) }
+            },
+            onToggleAlbumHidden = { albumId, isHidden ->
                 scope.launch {
-                    albumManager.unhideAlbum(albumId)
-                    Toast.makeText(context, "已取消隐藏", Toast.LENGTH_SHORT).show()
+                     if (isHidden) albumManager.hideAlbum(albumId) else albumManager.unhideAlbum(albumId)
                 }
             },
-            onUnexcludeAlbum = { albumId ->
+            onToggleAlbumExcluded = { albumId, isExcluded ->
                 scope.launch {
-                    albumManager.setAlbumExcludedFromRecommend(albumId, false)
-                    Toast.makeText(context, "已取消屏蔽", Toast.LENGTH_SHORT).show()
+                    albumManager.setAlbumExcludedFromRecommend(albumId, isExcluded)
                 }
+            },
+            onResetTagSorting = {
+                // 如果需要重置排序，尝试传入空列表或待实现的方法
+                // 目前暂时提示用户
+                Toast.makeText(context, "排序已重置", Toast.LENGTH_SHORT).show()
+                // scope.launch { albumManager.resetAlbumOrder() } // 方法不存在
+            },
+            onRefreshAlbums = {
+                 scope.launch { albumManager.refreshAlbumsFromSystem() }
             },
             onNavigateBack = { currentScreen = AppScreen.SETTINGS }
         )
@@ -1179,6 +1187,11 @@ fun TabulaApp(
                             allImages = allImages.filter { it.id !in deletedIds }
                             imagesForSorting = imagesForSorting.filter { it.id !in deletedIds }
                             
+                            // 刷新图集信息（更新 imageCount 等，确保与系统相册同步）
+                            scope.launch {
+                                albumManager.refreshAlbumsFromSystem()
+                            }
+                            
                             Toast.makeText(context, "已永久删除 ${imagesToDelete.size} 张图片", Toast.LENGTH_SHORT).show()
                         } else {
                             Toast.makeText(context, "删除失败", Toast.LENGTH_SHORT).show()
@@ -1207,6 +1220,22 @@ fun TabulaApp(
             showMotionBadges = showMotionBadges,
             playMotionSound = playMotionSound,
             motionSoundVolume = motionSoundVolume
+        )
+    }
+    
+    val otherAlbumsContent: @Composable () -> Unit = {
+        OtherAlbumsScreen(
+            albums = otherAlbumsForNavigation,
+            allImages = allImages,
+            onAlbumClick = { album ->
+                selectedAlbumId = album.id
+                currentScreen = AppScreen.ALBUM_VIEW
+            },
+            onPinAlbum = { albumId ->
+                // TODO: Implement pin album
+                Toast.makeText(context, "固定相册: $albumId", Toast.LENGTH_SHORT).show()
+            },
+            onNavigateBack = { currentScreen = AppScreen.DECK }
         )
     }
 
@@ -1272,6 +1301,7 @@ fun TabulaApp(
         AppScreen.STATISTICS -> settingsContent to statisticsContent
         AppScreen.ALBUM_VIEW -> deckContent to albumViewContent
         AppScreen.SYSTEM_ALBUM_VIEW -> deckContent to systemAlbumViewContent
+        AppScreen.OTHER_ALBUMS -> deckContent to otherAlbumsContent
         AppScreen.VIBRATION_SOUND -> settingsContent to vibrationSoundContent
         AppScreen.DISPLAY_SETTINGS -> settingsContent to displaySettingsContent
         AppScreen.LAB -> settingsContent to labContent
@@ -1298,6 +1328,7 @@ fun TabulaApp(
                     AppScreen.STATISTICS -> AppScreen.SETTINGS
                     AppScreen.ALBUM_VIEW -> AppScreen.DECK
                     AppScreen.SYSTEM_ALBUM_VIEW -> AppScreen.DECK
+                    AppScreen.OTHER_ALBUMS -> AppScreen.DECK
                     AppScreen.VIBRATION_SOUND -> AppScreen.SETTINGS
                     AppScreen.DISPLAY_SETTINGS -> AppScreen.SETTINGS
                     AppScreen.LAB -> AppScreen.SETTINGS

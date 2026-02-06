@@ -369,7 +369,9 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
      * 优先通过更新 RELATIVE_PATH 实现真正的移动，这样可以保留：
      * - 原始 _id（不会在"最近项目"中跳到最前）
      * - 所有时间戳（DATE_TAKEN, DATE_ADDED, DATE_MODIFIED）
-     * - 所有元数据（EXIF 等）
+     * - 所有元数据（EXIF, XMP, Live Photo 视频数据等）
+     * 
+     * 重要：对于 Live Photo，必须使用方法1（更新路径），否则可能丢失动态效果。
      * 
      * @param sourceUri 源图片 URI
      * @param albumName 相册名称
@@ -384,7 +386,10 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
             // 获取目标相对路径
             val targetRelativePath = getAlbumRelativePath(albumName)
             
-            // 方法1：通过更新 RELATIVE_PATH 来移动（真正的移动，保留所有元数据）
+            Log.d(TAG, "Moving image: $fileName -> $targetRelativePath (method: update RELATIVE_PATH)")
+            
+            // 方法1：通过更新 RELATIVE_PATH 来移动（真正的移动，保留所有元数据和 Live Photo 数据）
+            // 这是最理想的方式，因为它只改变文件位置，不改变文件内容
             val updateValues = ContentValues().apply {
                 put(MediaStore.Images.Media.RELATIVE_PATH, targetRelativePath)
                 // 不改变 DISPLAY_NAME，保持原始文件名
@@ -392,22 +397,26 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
             
             val updated = contentResolver.update(sourceUri, updateValues, null, null)
             if (updated > 0) {
-                Log.d(TAG, "✓ Moved image via update: $fileName -> $targetRelativePath (preserved _id)")
+                Log.d(TAG, "✓ Moved image via update: $fileName -> $targetRelativePath (preserved all metadata, Live Photo safe)")
                 return sourceUri
             } else {
-                Log.w(TAG, "✗ Failed to move via update (returned 0), falling back to copy+delete: $fileName")
+                // 记录详细的失败原因
+                Log.w(TAG, "✗ Failed to move via update (returned 0): $fileName")
+                Log.w(TAG, "  Possible reasons: file locked, permission denied, or unsupported by device")
+                Log.w(TAG, "  ⚠️ Falling back to copy+delete, Live Photo metadata may be affected")
             }
 
-            // 方法2：如果更新失败，则复制后删除（会创建新的 _id）
-            Log.d(TAG, "Falling back to copy+delete for: $fileName")
+            // 方法2：如果更新失败，则复制后删除（会创建新的 _id，可能影响 Live Photo）
+            Log.d(TAG, "Falling back to copy+delete for: $fileName (⚠️ may affect Live Photo)")
             val newUri = copyImageUsingMediaStore(sourceUri, albumName, fileName)
             if (newUri != null) {
                 deleteOriginalImage(sourceUri)
-                Log.d(TAG, "Moved image via copy+delete: $fileName -> $targetRelativePath (new _id)")
+                Log.d(TAG, "Moved image via copy+delete: $fileName -> $targetRelativePath (new _id created)")
             }
             return newUri
         } catch (e: Exception) {
             Log.e(TAG, "Error moving image: $fileName", e)
+            Log.w(TAG, "⚠️ Exception occurred, falling back to copy+delete (may affect Live Photo)")
             // 回退到复制+删除
             val newUri = copyImageUsingMediaStore(sourceUri, albumName, fileName)
             if (newUri != null) {
@@ -681,13 +690,29 @@ class SystemAlbumSyncManager private constructor(private val context: Context) {
             ) ?: return null
             
             // #region agent log
-            Log.d("DEBUG_SYNC", "[B2] copyImageUsingMediaStore:inserted | newUri=$newUri | fileName=$fileName | targetPath=$targetRelativePath")
+            Log.d("DEBUG_SYNC", "[B2] copyImageUsingMediaStore:inserted | newUri=$newUri | fileName=$fileName | targetPath=$targetRelativePath | sourceSize=$sourceSize")
             // #endregion
 
+            // 使用较大的缓冲区复制文件，确保 Live Photo 等大文件完整复制
+            var bytesCopied: Long = 0
             contentResolver.openInputStream(sourceUri)?.use { input ->
                 contentResolver.openOutputStream(newUri)?.use { output ->
-                    input.copyTo(output)
+                    val buffer = ByteArray(64 * 1024)  // 64KB 缓冲区，比默认的 8KB 更高效
+                    var bytesRead: Int
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                        bytesCopied += bytesRead
+                    }
+                    output.flush()
                 }
+            }
+
+            // 验证复制的完整性（特别重要对于 Live Photo）
+            if (sourceSize != null && bytesCopied != sourceSize) {
+                Log.w(TAG, "⚠️ File size mismatch after copy: expected=$sourceSize, actual=$bytesCopied (file: $fileName)")
+                // 不删除已复制的文件，让用户自己检查
+            } else {
+                Log.d(TAG, "✓ File copied completely: $bytesCopied bytes (file: $fileName)")
             }
 
             // 完成 pending 状态，并再次设置原始时间戳（防止被系统覆盖）

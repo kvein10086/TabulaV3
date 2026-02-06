@@ -87,6 +87,9 @@ dependencies {
     // Media Session (for Fluid Cloud)
     implementation(libs.androidx.media)
 
+    // ML Kit Face Detection (Bundled model - works offline on all devices)
+    implementation(libs.mlkit.face.detection)
+
     // Debug
     debugImplementation(libs.androidx.ui.tooling)
 

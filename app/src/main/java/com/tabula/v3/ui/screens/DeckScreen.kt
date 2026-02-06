@@ -42,6 +42,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -52,9 +53,13 @@ import androidx.compose.material3.IconButton
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -84,6 +89,7 @@ import com.tabula.v3.R
 import com.tabula.v3.data.model.Album
 import com.tabula.v3.data.model.ImageFile
 import com.tabula.v3.data.preferences.AlbumCleanupDisplayMode
+import com.tabula.v3.data.preferences.AppPreferences
 import com.tabula.v3.data.preferences.rememberAppPreferences
 import com.tabula.v3.data.preferences.SwipeStyle
 import com.tabula.v3.data.preferences.TagSelectionMode
@@ -101,6 +107,8 @@ import com.tabula.v3.ui.components.FixedTagBar
 import com.tabula.v3.ui.components.ModeToggle
 import com.tabula.v3.ui.components.SourceRect
 import com.tabula.v3.ui.components.SwipeableCardStack
+import com.tabula.v3.ui.components.GenieEffectOverlay
+import com.tabula.v3.ui.components.rememberGenieAnimationController
 import com.tabula.v3.ui.components.TopBar
 import com.tabula.v3.ui.components.UndoSnackbar
 import com.tabula.v3.ui.components.ViewerOverlay
@@ -109,6 +117,8 @@ import com.tabula.v3.ui.components.LocalLiquidGlassEnabled
 import com.tabula.v3.ui.theme.LocalIsDarkTheme
 import com.tabula.v3.ui.theme.TabulaColors
 import com.tabula.v3.ui.util.HapticFeedback
+import com.tabula.v3.ui.util.clampSelectionToVisible
+import com.tabula.v3.ui.util.selectAllOrClear
 import com.tabula.v3.ui.util.resolveAlbumCleanupImages
 import com.tabula.v3.ui.components.quickaction.QuickActionButton
 import com.tabula.v3.ui.components.quickaction.rememberSafeArea
@@ -154,6 +164,10 @@ fun DeckScreen(
     allImagesForCleanup: List<ImageFile> = allImages,
     batchSize: Int,
     isLoading: Boolean,
+    loadingProgress: Float = 0f,
+    loadingPhase: String = "正在扫描照片...",
+    loadingScanned: Int = 0,
+    loadingTotal: Int = 0,
     topBarDisplayMode: TopBarDisplayMode = TopBarDisplayMode.INDEX,
     onRemove: (ImageFile) -> Unit,
     onKeep: () -> Unit = {},
@@ -219,7 +233,9 @@ fun DeckScreen(
     isAlbumCleanupMode: Boolean = false,
     onAlbumCleanupModeChange: (Boolean) -> Unit = {},
     selectedCleanupAlbum: Album? = null,
-    onSelectedCleanupAlbumChange: (Album?) -> Unit = {}
+    onSelectedCleanupAlbumChange: (Album?) -> Unit = {},
+    // "其他图集"导航
+    onNavigateToOtherAlbums: (List<Album>) -> Unit = {}
 ) {
     val context = LocalContext.current
     val isDarkTheme = LocalIsDarkTheme.current
@@ -828,7 +844,12 @@ fun DeckScreen(
                 }
         ) { state ->
             when (state) {
-                "loading" -> LoadingState()
+                "loading" -> LoadingState(
+                    progress = loadingProgress,
+                    phase = loadingPhase,
+                    scanned = loadingScanned,
+                    total = loadingTotal
+                )
                 "empty" -> EmptyState()
                 "completed" -> {
                     BatchCompletionScreen(
@@ -1077,7 +1098,8 @@ fun DeckScreen(
                     onSyncClick = onSyncClick,
                     onSettingsClick = onNavigateToSettings,
                     showHiddenAlbums = showHiddenAlbums,
-                    onToggleShowHidden = onToggleShowHidden
+                    onToggleShowHidden = onToggleShowHidden,
+                    onNavigateToOtherAlbums = onNavigateToOtherAlbums
                 )
             }
         }
@@ -1690,6 +1712,7 @@ private fun DeckContent(
     
     // 回收站按钮位置（用于上滑删除的 Genie 动画目标点）
     var trashButtonBounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
+    val genieController = rememberGenieAnimationController()
     
     // 固定标签点击模式：触发 Genie 动画的目标索引和相册
     var fixedTagTriggerIndex by remember { mutableStateOf<Int?>(null) }
@@ -1795,7 +1818,8 @@ private fun DeckContent(
                             // 重置状态
                             fixedTagTriggerIndex = null
                             pendingFixedTagAlbum = null
-                        }
+                        },
+                        genieController = genieController
                     )
                 }
             }
@@ -1988,39 +2012,103 @@ private fun DeckContent(
         }
         
         // 底部模式切换器已移至 DeckScreen 顶层，确保在图片和图集模式下都可见
+        if (genieController.isAnimating) {
+            GenieEffectOverlay(
+                bitmap = genieController.bitmap,
+                sourceBounds = genieController.sourceBounds,
+                targetX = genieController.targetX,
+                targetY = genieController.targetY,
+                progress = genieController.progress,
+                screenHeight = genieController.screenHeight,
+                direction = genieController.direction,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
 }
 
 /**
- * 加载状态
+ * 加载状态（带进度条）
+ *
+ * 显示阶段化的加载进度：
+ * - 扫描照片 (0~80%)：显示 "正在扫描照片... 3,247 / 10,532"
+ * - 加载图集 (80~95%)：显示 "正在加载图集..."
+ * - 即将完成 (95~100%)：显示 "即将完成..."
  */
 @Composable
-private fun LoadingState() {
+private fun LoadingState(
+    progress: Float = 0f,
+    phase: String = "正在扫描照片...",
+    scanned: Int = 0,
+    total: Int = 0
+) {
     val isDarkTheme = LocalIsDarkTheme.current
     val textColor = if (isDarkTheme) Color.White else TabulaColors.CatBlack
+    val secondaryTextColor = if (isDarkTheme) Color(0xFF8E8E93) else Color(0xFF8E8E93)
+    val progressBarColor = if (isDarkTheme) Color.White else TabulaColors.CatBlack
+    val trackColor = if (isDarkTheme) Color(0xFF2C2C2E) else Color(0xFFE5E5EA)
+
+    // 平滑动画过渡（避免进度条跳动）
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        label = "loading_progress"
+    )
+
+    // 构建副标题文字
+    val subtitleText = if (total > 0 && progress < 0.8f) {
+        val formatter = java.text.NumberFormat.getIntegerInstance()
+        "${formatter.format(scanned)} / ${formatter.format(total)}"
+    } else {
+        null
+    }
 
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(horizontal = 48.dp)
+        ) {
             // Logo
             Image(
                 painter = painterResource(id = R.drawable.logo),
                 contentDescription = "Tabula Logo",
                 modifier = Modifier.size(100.dp)
             )
-            Spacer(modifier = Modifier.height(24.dp))
-            CircularProgressIndicator(
-                color = textColor,
-                strokeWidth = 3.dp
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            // 进度条
+            LinearProgressIndicator(
+                progress = { animatedProgress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp)),
+                color = progressBarColor,
+                trackColor = trackColor
             )
+
             Spacer(modifier = Modifier.height(16.dp))
+
+            // 阶段描述
             Text(
-                text = "正在加载照片...",
+                text = phase,
                 style = MaterialTheme.typography.bodyLarge,
                 color = textColor
             )
+
+            // 数量副标题（仅扫描阶段显示）
+            if (subtitleText != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = subtitleText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = secondaryTextColor
+                )
+            }
         }
     }
 }
@@ -2067,7 +2155,61 @@ private fun EmptyState() {
     }
 }
 
+/**
+ * 将图集列表按收纳规则分为"显示列表"和"其他列表"
+ *
+ * 收纳规则：
+ * 1. 系统图集总数（非 Tabula 创建）超过阈值时启用
+ * 2. 图片数 <= smallThreshold 的非 Tabula 图集被收纳
+ * 3. 用户 pin 过的图集始终显示
+ * 4. 被收纳的图集不超过总数的 80%
+ * 5. Tabula 创建的图集（路径以 Pictures/Tabula/ 开头）永不被收纳
+ */
+private fun consolidateAlbums(
+    visibleAlbums: List<Album>,
+    pinnedNames: Set<String>
+): Pair<List<Album>, List<Album>> {
+    // 区分 Tabula 图集和系统图集
+    val tabulaAlbums = visibleAlbums.filter {
+        it.systemAlbumPath?.startsWith("Pictures/Tabula/", ignoreCase = true) == true
+    }
+    val systemAlbums = visibleAlbums.filter {
+        it.systemAlbumPath?.startsWith("Pictures/Tabula/", ignoreCase = true) != true
+    }
 
+    // 系统图集数量未达到阈值，不收纳
+    if (systemAlbums.size <= AppPreferences.OTHER_ALBUMS_TRIGGER_THRESHOLD) {
+        return visibleAlbums to emptyList()
+    }
+
+    // 按图片数量分组
+    var smallThreshold = AppPreferences.OTHER_ALBUMS_SMALL_THRESHOLD
+    var candidatesForOther = systemAlbums.filter { album ->
+        album.imageCount <= smallThreshold && album.name !in pinnedNames
+    }
+
+    // 保护：如果收纳比例超过上限，逐步降低阈值
+    while (candidatesForOther.size > (systemAlbums.size * AppPreferences.OTHER_ALBUMS_MAX_RATIO).toInt()
+        && smallThreshold > 1
+    ) {
+        smallThreshold--
+        candidatesForOther = systemAlbums.filter { album ->
+            album.imageCount <= smallThreshold && album.name !in pinnedNames
+        }
+    }
+
+    // 如果没有需要收纳的，全部显示
+    if (candidatesForOther.isEmpty()) {
+        return visibleAlbums to emptyList()
+    }
+
+    val otherIds = candidatesForOther.map { it.id }.toSet()
+    val displayedSystemAlbums = systemAlbums.filter { it.id !in otherIds }
+
+    // 保持原始排序：Tabula 图集 + 未被收纳的系统图集
+    val displayed = visibleAlbums.filter { it.id !in otherIds }
+    return displayed to candidatesForOther
+}
 
 /**
  * 图集网格内容
@@ -2089,7 +2231,8 @@ private fun AlbumsGridContent(
     onSyncClick: () -> Unit = {},
     onSettingsClick: () -> Unit = {},
     showHiddenAlbums: Boolean = false,
-    onToggleShowHidden: () -> Unit = {}
+    onToggleShowHidden: () -> Unit = {},
+    onNavigateToOtherAlbums: (List<Album>) -> Unit = {}
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val context = LocalContext.current
@@ -2121,10 +2264,46 @@ private fun AlbumsGridContent(
     val contentTopPadding = topBarVisibleHeight + 8.dp
 
     // 根据 showHiddenAlbums 过滤显示的图集
-    val displayAlbums = if (showHiddenAlbums) {
+    val visibleAlbums = if (showHiddenAlbums) {
         albums  // 显示所有图集（包括隐藏的）
     } else {
         albums.filter { !it.isHidden }  // 只显示未隐藏的图集
+    }
+
+    // ========== "其他图集"收纳逻辑 ==========
+    val appPreferences = rememberAppPreferences()
+    val pinnedNames = remember { appPreferences.pinnedAlbumNames }
+
+    // 计算收纳结果
+    val (displayAlbums, otherAlbums) = remember(visibleAlbums, pinnedNames) {
+        consolidateAlbums(visibleAlbums, pinnedNames)
+    }
+
+    // ========== 多选模式状态 ==========
+    var isSelectionMode by remember { mutableStateOf(false) }
+    var selectedAlbumIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showBulkActionDialog by remember { mutableStateOf(false) }
+
+    // 可选中的图集 ID 集合
+    val selectableIds = remember(displayAlbums) {
+        displayAlbums.map { it.id }.toSet()
+    }
+
+    // 当可见集合变化时，裁剪选中集合
+    LaunchedEffect(selectableIds) {
+        val clamped = clampSelectionToVisible(selectedAlbumIds, selectableIds)
+        if (clamped != selectedAlbumIds) {
+            selectedAlbumIds = clamped
+        }
+        if (selectedAlbumIds.isEmpty() && isSelectionMode) {
+            isSelectionMode = false
+        }
+    }
+
+    // 多选模式返回键处理
+    BackHandler(enabled = isSelectionMode) {
+        isSelectionMode = false
+        selectedAlbumIds = emptySet()
     }
 
     Box(
@@ -2141,9 +2320,13 @@ private fun AlbumsGridContent(
                 onSystemBucketClick = onSystemBucketClick,
                 onReorderAlbums = onReorderAlbums,
                 onCreateAlbumClick = { showCreateDialog = true },
-                onHideAlbum = onHideAlbum,
-                onExcludeAlbum = onExcludeAlbum,
-                isAlbumExcluded = isAlbumExcluded,
+                isSelectionMode = isSelectionMode,
+                selectedIds = selectedAlbumIds,
+                onSelectionChange = { selectedAlbumIds = it },
+                onEnterSelectionMode = { initialId ->
+                    isSelectionMode = true
+                    selectedAlbumIds = setOf(initialId)
+                },
                 textColor = textColor,
                 secondaryTextColor = secondaryTextColor,
                 isDarkTheme = isDarkTheme,
@@ -2151,7 +2334,9 @@ private fun AlbumsGridContent(
                 listState = listState,
                 topPadding = contentTopPadding,
                 headerContent = null,
-                userScrollEnabled = true
+                userScrollEnabled = true,
+                otherAlbums = otherAlbums,
+                onOtherAlbumsClick = { onNavigateToOtherAlbums(otherAlbums) }
             )
 
         // ========== 顶部导航栏（纯色背景，移除毛玻璃效果以提升性能）==========
@@ -2177,56 +2362,124 @@ private fun AlbumsGridContent(
                         .fillMaxWidth()
                         .padding(top = 12.dp, start = 20.dp, end = 20.dp)
                 ) {
-                    // 标题
-                    Text(
-                        text = "图集",
-                        color = textColor,
-                        fontSize = 32.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.align(Alignment.CenterStart)
-                    )
-                    
-                    // 右侧按钮组
-                    val buttonBgColor = if (isDarkTheme) TabulaColors.CatBlackLight else Color.White
-                    val buttonIconColor = if (isDarkTheme) Color.White else TabulaColors.CatBlack
-                    
-                    Row(
-                        modifier = Modifier.align(Alignment.CenterEnd),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        // 显示/隐藏 隐藏图集按钮（仅当有隐藏图集时显示）
-                        if (hasHiddenAlbums) {
-                            ActionIconButton(
-                                icon = if (showHiddenAlbums) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                                contentDescription = if (showHiddenAlbums) "隐藏已隐藏的图集" else "显示隐藏的图集",
-                                onClick = {
-                                    com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                                    onToggleShowHidden()
-                                },
-                                backgroundColor = if (showHiddenAlbums) {
-                                    Color(0xFF007AFF).copy(alpha = 0.15f)
-                                } else {
-                                    buttonBgColor
-                                },
-                                iconColor = if (showHiddenAlbums) {
-                                    Color(0xFF007AFF)
-                                } else {
-                                    buttonIconColor
-                                }
+                    if (isSelectionMode) {
+                        // ========== 多选模式顶部栏 ==========
+                        // 左侧关闭按钮
+                        IconButton(
+                            onClick = {
+                                HapticFeedback.lightTap(context)
+                                isSelectionMode = false
+                                selectedAlbumIds = emptySet()
+                            },
+                            modifier = Modifier.align(Alignment.CenterStart)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Close,
+                                contentDescription = "退出选择",
+                                tint = textColor,
+                                modifier = Modifier.size(24.dp)
                             )
                         }
-                        
-                        // 设置按钮
-                        ActionIconButton(
-                            icon = Icons.Outlined.Settings,
-                            contentDescription = "设置",
-                            onClick = {
-                                com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
-                                onSettingsClick()
-                            },
-                            backgroundColor = buttonBgColor,
-                            iconColor = buttonIconColor
+
+                        // 中间标题
+                        Text(
+                            text = "共 ${selectableIds.size} 图集 · 已选 ${selectedAlbumIds.size} 个",
+                            color = textColor,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.align(Alignment.Center)
                         )
+
+                        // 右侧按钮组
+                        Row(
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // 全选/取消全选
+                            val allSelected = selectableIds.isNotEmpty() && selectedAlbumIds.containsAll(selectableIds)
+                            TextButton(
+                                onClick = {
+                                    HapticFeedback.lightTap(context)
+                                    selectedAlbumIds = selectAllOrClear(selectableIds.toList(), selectedAlbumIds)
+                                }
+                            ) {
+                                Text(
+                                    text = if (allSelected) "取消全选" else "全选",
+                                    color = Color(0xFF007AFF),
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                            // 操作按钮
+                            TextButton(
+                                onClick = {
+                                    HapticFeedback.lightTap(context)
+                                    showBulkActionDialog = true
+                                },
+                                enabled = selectedAlbumIds.isNotEmpty()
+                            ) {
+                                Text(
+                                    text = "操作",
+                                    color = if (selectedAlbumIds.isNotEmpty()) Color(0xFF007AFF) else Color(0xFF8E8E93),
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    } else {
+                        // ========== 正常模式顶部栏 ==========
+                        // 标题
+                        Text(
+                            text = "图集",
+                            color = textColor,
+                            fontSize = 32.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.align(Alignment.CenterStart)
+                        )
+                        
+                        // 右侧按钮组
+                        val buttonBgColor = if (isDarkTheme) TabulaColors.CatBlackLight else Color.White
+                        val buttonIconColor = if (isDarkTheme) Color.White else TabulaColors.CatBlack
+                        
+                        Row(
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // 显示/隐藏 隐藏图集按钮（仅当有隐藏图集时显示）
+                            if (hasHiddenAlbums) {
+                                ActionIconButton(
+                                    icon = if (showHiddenAlbums) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                                    contentDescription = if (showHiddenAlbums) "隐藏已隐藏的图集" else "显示隐藏的图集",
+                                    onClick = {
+                                        com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                                        onToggleShowHidden()
+                                    },
+                                    backgroundColor = if (showHiddenAlbums) {
+                                        Color(0xFF007AFF).copy(alpha = 0.15f)
+                                    } else {
+                                        buttonBgColor
+                                    },
+                                    iconColor = if (showHiddenAlbums) {
+                                        Color(0xFF007AFF)
+                                    } else {
+                                        buttonIconColor
+                                    }
+                                )
+                            }
+                            
+                            // 设置按钮
+                            ActionIconButton(
+                                icon = Icons.Outlined.Settings,
+                                contentDescription = "设置",
+                                onClick = {
+                                    com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                                    onSettingsClick()
+                                },
+                                backgroundColor = buttonBgColor,
+                                iconColor = buttonIconColor
+                            )
+                        }
                     }
                 }
             }
@@ -2241,6 +2494,108 @@ private fun AlbumsGridContent(
             onConfirm = { name, color, emoji ->
                 onCreateAlbum(name, color, emoji)
                 showCreateDialog = false
+            }
+        )
+    }
+
+    // ========== 批量操作对话框 ==========
+    if (showBulkActionDialog) {
+        var checkExclude by remember { mutableStateOf(false) }
+        var checkHide by remember { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { showBulkActionDialog = false },
+            title = {
+                Text(
+                    text = "批量操作",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "已选 ${selectedAlbumIds.size} 个图集，选择要执行的操作：",
+                        fontSize = 14.sp,
+                        color = Color(0xFF8E8E93),
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { checkExclude = !checkExclude }
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Checkbox(
+                            checked = checkExclude,
+                            onCheckedChange = { checkExclude = it }
+                        )
+                        Text(
+                            text = "屏蔽图集",
+                            fontSize = 16.sp,
+                            modifier = Modifier.padding(start = 4.dp)
+                        )
+                    }
+                    Text(
+                        text = "屏蔽后图集中的照片不会出现在推荐流中",
+                        fontSize = 12.sp,
+                        color = Color(0xFF8E8E93),
+                        modifier = Modifier.padding(start = 48.dp, bottom = 8.dp)
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { checkHide = !checkHide }
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Checkbox(
+                            checked = checkHide,
+                            onCheckedChange = { checkHide = it }
+                        )
+                        Text(
+                            text = "隐藏图集",
+                            fontSize = 16.sp,
+                            modifier = Modifier.padding(start = 4.dp)
+                        )
+                    }
+                    Text(
+                        text = "隐藏后图集不会在图集列表中显示",
+                        fontSize = 12.sp,
+                        color = Color(0xFF8E8E93),
+                        modifier = Modifier.padding(start = 48.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val selectedAlbumsList = displayAlbums.filter { it.id in selectedAlbumIds }
+                        selectedAlbumsList.forEach { album ->
+                            if (checkExclude) onExcludeAlbum?.invoke(album, true)
+                            if (checkHide) onHideAlbum?.invoke(album)
+                        }
+                        showBulkActionDialog = false
+                        isSelectionMode = false
+                        selectedAlbumIds = emptySet()
+                    },
+                    enabled = checkHide || checkExclude
+                ) {
+                    Text(
+                        text = "确定",
+                        color = if (checkHide || checkExclude) Color(0xFF007AFF) else Color(0xFF8E8E93),
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBulkActionDialog = false }) {
+                    Text(
+                        text = "取消",
+                        color = Color(0xFF8E8E93)
+                    )
+                }
             }
         )
     }

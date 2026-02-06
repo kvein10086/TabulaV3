@@ -184,7 +184,8 @@ fun SwipeableCardStack(
     // 固定标签点击模式：外部触发 Genie 动画的目标索引（非 null 时触发）
     fixedTagTriggerIndex: Int? = null,
     // 固定标签 Genie 动画完成回调
-    onFixedTagAnimationComplete: (() -> Unit)? = null
+    onFixedTagAnimationComplete: (() -> Unit)? = null,
+    genieController: GenieAnimationController
 ) {
     if (images.isEmpty()) return
     
@@ -215,7 +216,8 @@ fun SwipeableCardStack(
             trashButtonBounds = trashButtonBounds,
             onSwipeStart = onSwipeStart,
             fixedTagTriggerIndex = fixedTagTriggerIndex,
-            onFixedTagAnimationComplete = onFixedTagAnimationComplete
+            onFixedTagAnimationComplete = onFixedTagAnimationComplete,
+            genieController = genieController
         )
         return
     }
@@ -249,9 +251,9 @@ fun SwipeableCardStack(
     val tagSwitchDistanceYPx = baseDistanceY / tagSwitchSpeed.coerceIn(0.5f, 2.0f)
     val totalTags = albums.size + 1  // 总标签数（+1 是新建按钮）
 
-    // 动画时长
-    val shuffleAnimDuration = 120
-    val genieAnimDuration = 320  // Genie动画时长（320ms - 快速但丝滑）
+    // 动画时长（优化：增加时长让动画更丝滑）
+    val shuffleAnimDuration = 180  // 从 120ms 增加到 180ms，更平滑的卡片切换
+    val genieAnimDuration = 440  // Genie动画时长（380ms - 更丝滑的吸入效果）
 
     // ========== 顶层卡片拖拽状态 ==========
     val dragOffsetX = remember { Animatable(0f) }
@@ -290,7 +292,6 @@ fun SwipeableCardStack(
     val indexUpdateThrottleMs = 16L  // 索引更新节流间隔（约60fps）
 
     // ========== Genie动画状态 ==========
-    val genieController = rememberGenieAnimationController()
     
     // ========== Bitmap 预加载状态 ==========
     // 在下滑进入归类模式时预加载，而不是松手时才加载
@@ -385,11 +386,16 @@ fun SwipeableCardStack(
      */
     suspend fun resetDragState() = coroutineScope {
         // 并行执行所有动画，coroutineScope 会等待全部完成
-        launch { dragOffsetX.animateTo(0f, spring(stiffness = Spring.StiffnessMedium)) }
-        launch { dragOffsetY.animateTo(0f, spring(stiffness = Spring.StiffnessMedium)) }
-        launch { dragRotation.animateTo(0f, spring(stiffness = Spring.StiffnessMedium)) }
-        launch { dragAlpha.animateTo(1f, spring(stiffness = Spring.StiffnessMedium)) }
-        launch { dragScale.animateTo(1f, spring(stiffness = Spring.StiffnessMedium)) }
+        // 使用更丝滑的弹簧参数：适中的阻尼比和较低的刚度
+        val smoothSpring = spring<Float>(
+            dampingRatio = Spring.DampingRatioMediumBouncy,  // 0.75，微弹跳更有活力
+            stiffness = Spring.StiffnessLow  // 200，更平滑的过渡
+        )
+        launch { dragOffsetX.animateTo(0f, smoothSpring) }
+        launch { dragOffsetY.animateTo(0f, smoothSpring) }
+        launch { dragRotation.animateTo(0f, smoothSpring) }
+        launch { dragAlpha.animateTo(1f, smoothSpring) }
+        launch { dragScale.animateTo(1f, smoothSpring) }
         
         // 动画完成后重置状态
         lockedDirection = SwipeDirection.NONE
@@ -640,10 +646,12 @@ fun SwipeableCardStack(
                 // 正常的洗牌动画
                 val targetX = if (direction > 0) -baseOffsetPx else baseOffsetPx
                 val targetRotation = if (direction > 0) -8f else 8f
-
-                scope.launch { dragOffsetX.animateTo(targetX, tween(shuffleAnimDuration)) }
-                scope.launch { dragOffsetY.animateTo(0f, tween(shuffleAnimDuration)) }
-                scope.launch { dragRotation.animateTo(targetRotation, tween(shuffleAnimDuration)) }
+                
+                // 使用更丝滑的缓动曲线
+                val smoothEasing = androidx.compose.animation.core.FastOutSlowInEasing
+                scope.launch { dragOffsetX.animateTo(targetX, tween(shuffleAnimDuration, easing = smoothEasing)) }
+                scope.launch { dragOffsetY.animateTo(0f, tween(shuffleAnimDuration, easing = smoothEasing)) }
+                scope.launch { dragRotation.animateTo(targetRotation, tween(shuffleAnimDuration, easing = smoothEasing)) }
 
                 kotlinx.coroutines.delay(shuffleAnimDuration.toLong() / 2)
 
@@ -688,20 +696,19 @@ fun SwipeableCardStack(
                 HapticFeedback.heavyTap(context)
             }
             
-            // 计算目标位置（回收站按钮下侧边框的中心点）
+            // 计算目标位置（回收站按钮中心点）
             // 需要将绝对坐标转换为相对于容器的坐标
-            val targetCenterX: Float
-            val targetCenterY: Float
-            
-            if (trashButtonBounds != Rect.Zero && containerBounds != Rect.Zero) {
-                // 使用回收站按钮下侧边框的中心点作为目标
-                targetCenterX = trashButtonBounds.center.x - containerBounds.left
-                targetCenterY = trashButtonBounds.bottom - containerBounds.top
+            val fallbackTarget = if (containerBounds != Rect.Zero) {
+                Offset(
+                    x = containerBounds.left + containerBounds.width * 0.8f,
+                    y = containerBounds.top + with(density) { 50.dp.toPx() }
+                )
             } else {
-                // 回退到估算值（右上角区域）
-                targetCenterX = containerBounds.width * 0.8f
-                targetCenterY = with(density) { 60.dp.toPx() }
+                Offset.Zero
             }
+            val target = computeTrashTargetInRoot(trashButtonBounds, fallbackTarget)
+            val targetCenterX = target.x
+            val targetCenterY = target.y
             
             // 使用预加载的 Bitmap（在上滑方向锁定时已开始加载）
             var bitmap = preloadedDeleteBitmap
@@ -734,16 +741,12 @@ fun SwipeableCardStack(
             // 重要：加上当前的拖动偏移量，让 Genie 动画从实际松手位置开始，而非卡片原始位置
             val currentDragX = dragOffsetX.value
             val currentDragY = dragOffsetY.value
-            val relativeSourceBounds = if (containerBounds != Rect.Zero) {
-                Rect(
-                    left = topCardBounds.left - containerBounds.left + currentDragX,
-                    top = topCardBounds.top - containerBounds.top + currentDragY,
-                    right = topCardBounds.right - containerBounds.left + currentDragX,
-                    bottom = topCardBounds.bottom - containerBounds.top + currentDragY
-                )
-            } else {
-                topCardBounds.translate(currentDragX, currentDragY)
-            }
+            val relativeSourceBounds = Rect(
+                left = topCardBounds.left + currentDragX,
+                top = topCardBounds.top + currentDragY,
+                right = topCardBounds.right + currentDragX,
+                bottom = topCardBounds.bottom + currentDragY
+            )
             
             if (bitmap != null) {
                 // 隐藏原始卡片
@@ -768,8 +771,8 @@ fun SwipeableCardStack(
                 val animDuration = 400
                 val easeInOut = CubicBezierEasing(0.4f, 0f, 0.2f, 1f)
                 
-                val finalOffsetX = targetCenterX - topCardBounds.center.x + containerBounds.left
-                val finalOffsetY = targetCenterY - topCardBounds.center.y + containerBounds.top
+                val finalOffsetX = targetCenterX - topCardBounds.center.x
+                val finalOffsetY = targetCenterY - topCardBounds.center.y
                 
                 scope.launch { dragOffsetX.animateTo(finalOffsetX, tween(animDuration, easing = easeInOut)) }
                 scope.launch { dragOffsetY.animateTo(finalOffsetY, tween(animDuration, easing = easeInOut)) }
@@ -883,27 +886,21 @@ fun SwipeableCardStack(
             
             // 计算目标位置
             // 重要：需要将绝对坐标（boundsInRoot）转换为相对于容器的坐标
-            val targetCenterX: Float
-            val targetCenterY: Float
-            
-            if (tagBounds != null && tagBounds != Rect.Zero && containerBounds != Rect.Zero) {
-                // 使用标签上边的中点作为目标位置（更符合视觉效果）
-                // 将绝对坐标转换为相对于容器的坐标
-                // 
-                // 重要：boundsInRoot() 返回的是标签的实际位置
-                // 目标点设为标签上边中点
-                targetCenterX = tagBounds.center.x - containerBounds.left
-                targetCenterY = tagBounds.top - containerBounds.top  // 上边的Y坐标
-            } else {
-                // 回退到估算值（仅在无法获取实际位置时使用）
+            val fallbackTarget = if (containerBounds != Rect.Zero) {
                 val tagEstimatedWidth = with(density) { 65.dp.toPx() }
                 val tagSpacing = with(density) { 12.dp.toPx() }
                 val listPadding = with(density) { 24.dp.toPx() }
-                val tagsStartX = listPadding
-                targetCenterX = tagsStartX + targetIndex * (tagEstimatedWidth + tagSpacing) + tagEstimatedWidth / 2f
-                // 回退时使用容器底部作为目标
-                targetCenterY = containerBounds.height - with(density) { 80.dp.toPx() }
+                val tagsStartX = containerBounds.left + listPadding
+                Offset(
+                    x = tagsStartX + targetIndex * (tagEstimatedWidth + tagSpacing) + tagEstimatedWidth / 2f,
+                    y = containerBounds.bottom - with(density) { 80.dp.toPx() }
+                )
+            } else {
+                Offset.Zero
             }
+            val target = computeTagTargetInRoot(tagBounds, fallbackTarget)
+            val targetCenterX = target.x
+            val targetCenterY = target.y
             
             // 使用预加载的 Bitmap（在进入归类模式时已开始加载）
             // 如果预加载还没完成，等待一小段时间；如果仍未完成则回退到快速加载
@@ -937,16 +934,12 @@ fun SwipeableCardStack(
             // 重要：加上当前的拖动偏移量，让 Genie 动画从实际松手位置开始，而非卡片原始位置
             val currentDragX = dragOffsetX.value
             val currentDragY = dragOffsetY.value
-            val relativeSourceBounds = if (containerBounds != Rect.Zero) {
-                Rect(
-                    left = topCardBounds.left - containerBounds.left + currentDragX,
-                    top = topCardBounds.top - containerBounds.top + currentDragY,
-                    right = topCardBounds.right - containerBounds.left + currentDragX,
-                    bottom = topCardBounds.bottom - containerBounds.top + currentDragY
-                )
-            } else {
-                topCardBounds.translate(currentDragX, currentDragY)
-            }
+            val relativeSourceBounds = Rect(
+                left = topCardBounds.left + currentDragX,
+                top = topCardBounds.top + currentDragY,
+                right = topCardBounds.right + currentDragX,
+                bottom = topCardBounds.bottom + currentDragY
+            )
             
             if (bitmap != null) {
                 // 隐藏原始卡片
@@ -1544,18 +1537,6 @@ fun SwipeableCardStack(
         }
         
         // ========== Genie Effect 覆盖层 ==========
-        if (genieController.isAnimating) {
-            GenieEffectOverlay(
-                bitmap = genieController.bitmap,
-                sourceBounds = genieController.sourceBounds,
-                targetX = genieController.targetX,
-                targetY = genieController.targetY,
-                progress = genieController.progress,
-                screenHeight = genieController.screenHeight,
-                direction = genieController.direction,
-                modifier = Modifier.zIndex(10f)
-            )
-        }
     }
 }
 
@@ -1599,7 +1580,8 @@ private fun DrawModeCardStack(
     trashButtonBounds: Rect = Rect.Zero,
     onSwipeStart: ((xRatio: Float, yRatio: Float) -> Unit)? = null,
     fixedTagTriggerIndex: Int? = null,
-    onFixedTagAnimationComplete: (() -> Unit)? = null
+    onFixedTagAnimationComplete: (() -> Unit)? = null,
+    genieController: GenieAnimationController
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -1627,10 +1609,10 @@ private fun DrawModeCardStack(
     val tagSwitchDistanceYPx = baseDistanceY / tagSwitchSpeed.coerceIn(0.5f, 2.0f)
     val totalTags = albums.size + 1
 
-    // 动画时长
-    val drawAnimDuration = 120  // 发牌动画时长（缩短，减少快速连滑的不可交互窗口）
-    val recallAnimDuration = 140  // 收牌动画时长（同步缩短）
-    val genieAnimDuration = 320  // Genie动画时长（320ms - 快速但丝滑）
+    // 动画时长（优化：增加时长让动画更丝滑）
+    val drawAnimDuration = 160  // 发牌动画时长（从 120ms 增加到 160ms，更平滑）
+    val recallAnimDuration = 180  // 收牌动画时长（从 140ms 增加到 180ms，更平滑）
+    val genieAnimDuration = 440  // Genie动画时长（380ms - 更丝滑的吸入效果）
 
     // ========== 摸牌样式状态 ==========
     var drawState by remember { mutableStateOf(DrawCardState(currentIndex = currentIndex)) }
@@ -1753,7 +1735,6 @@ private fun DrawModeCardStack(
     val indexUpdateThrottleMs = 16L  // 索引更新节流间隔（约60fps）
 
     // Genie 动画控制器
-    val genieController = rememberGenieAnimationController()
     
     // Bitmap 预加载状态
     var preloadedBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -1846,21 +1827,26 @@ private fun DrawModeCardStack(
      */
     suspend fun resetDragState() = coroutineScope {
         // 并行执行所有动画，coroutineScope 会等待全部完成
-        launch { centerDragOffsetX.animateTo(0f, spring(stiffness = Spring.StiffnessMedium)) }
-        launch { centerDragOffsetY.animateTo(0f, spring(stiffness = Spring.StiffnessMedium)) }
-        launch { centerDragRotation.animateTo(0f, spring(stiffness = Spring.StiffnessMedium)) }
-        launch { centerDragAlpha.animateTo(1f, spring(stiffness = Spring.StiffnessMedium)) }
-        launch { centerDragScale.animateTo(1f, spring(stiffness = Spring.StiffnessMedium)) }
+        // 使用更丝滑的弹簧参数：适中的阻尼比和较低的刚度
+        val smoothSpring = spring<Float>(
+            dampingRatio = Spring.DampingRatioMediumBouncy,  // 0.75，微弹跳更有活力
+            stiffness = Spring.StiffnessLow  // 200，更平滑的过渡
+        )
+        launch { centerDragOffsetX.animateTo(0f, smoothSpring) }
+        launch { centerDragOffsetY.animateTo(0f, smoothSpring) }
+        launch { centerDragRotation.animateTo(0f, smoothSpring) }
+        launch { centerDragAlpha.animateTo(1f, smoothSpring) }
+        launch { centerDragScale.animateTo(1f, smoothSpring) }
         
         // 重置左卡跟手状态（带动画回弹）
-        launch { leftCardOffsetX.animateTo(-sideCardOffsetPx, spring(stiffness = Spring.StiffnessMedium)) }
-        launch { leftCardScale.animateTo(0.88f, spring(stiffness = Spring.StiffnessMedium)) }
-        launch { leftCardAlpha.animateTo(1f, spring(stiffness = Spring.StiffnessMedium)) }  // 保持不透明
-        launch { leftCardRotation.animateTo(-5f, spring(stiffness = Spring.StiffnessMedium)) }
+        launch { leftCardOffsetX.animateTo(-sideCardOffsetPx, smoothSpring) }
+        launch { leftCardScale.animateTo(0.88f, smoothSpring) }
+        launch { leftCardAlpha.animateTo(1f, smoothSpring) }  // 保持不透明
+        launch { leftCardRotation.animateTo(-5f, smoothSpring) }
         
         // 重置返回牌预览状态
-        launch { returningCardOffsetX.animateTo(screenWidthPx, spring(stiffness = Spring.StiffnessMedium)) }
-        launch { returningCardAlpha.animateTo(0f, spring(stiffness = Spring.StiffnessMedium)) }
+        launch { returningCardOffsetX.animateTo(screenWidthPx, smoothSpring) }
+        launch { returningCardAlpha.animateTo(0f, smoothSpring) }
         
         // 动画完成后重置状态
         lockedDirection = SwipeDirection.NONE
@@ -2275,16 +2261,17 @@ private fun DrawModeCardStack(
                 HapticFeedback.heavyTap(context)
             }
             
-            val targetCenterX: Float
-            val targetCenterY: Float
-            
-            if (trashButtonBounds != Rect.Zero && containerBounds != Rect.Zero) {
-                targetCenterX = trashButtonBounds.center.x - containerBounds.left
-                targetCenterY = trashButtonBounds.bottom - containerBounds.top
+            val fallbackTarget = if (containerBounds != Rect.Zero) {
+                Offset(
+                    x = containerBounds.left + containerBounds.width * 0.8f,
+                    y = containerBounds.top + with(density) { 50.dp.toPx() }
+                )
             } else {
-                targetCenterX = containerBounds.width * 0.8f
-                targetCenterY = with(density) { 60.dp.toPx() }
+                Offset.Zero
             }
+            val target = computeTrashTargetInRoot(trashButtonBounds, fallbackTarget)
+            val targetCenterX = target.x
+            val targetCenterY = target.y
             
             var bitmap = preloadedDeleteBitmap
             if (bitmap == null && isPreloadingDelete) {
@@ -2312,16 +2299,12 @@ private fun DrawModeCardStack(
             // 重要：加上当前的拖动偏移量，让 Genie 动画从实际松手位置开始，而非卡片原始位置
             val currentDragX = centerDragOffsetX.value
             val currentDragY = centerDragOffsetY.value
-            val relativeSourceBounds = if (containerBounds != Rect.Zero) {
-                Rect(
-                    left = centerCardBounds.left - containerBounds.left + currentDragX,
-                    top = centerCardBounds.top - containerBounds.top + currentDragY,
-                    right = centerCardBounds.right - containerBounds.left + currentDragX,
-                    bottom = centerCardBounds.bottom - containerBounds.top + currentDragY
-                )
-            } else {
-                centerCardBounds.translate(currentDragX, currentDragY)
-            }
+            val relativeSourceBounds = Rect(
+                left = centerCardBounds.left + currentDragX,
+                top = centerCardBounds.top + currentDragY,
+                right = centerCardBounds.right + currentDragX,
+                bottom = centerCardBounds.bottom + currentDragY
+            )
             
             if (bitmap != null) {
                 centerDragAlpha.snapTo(0f)
@@ -2342,8 +2325,8 @@ private fun DrawModeCardStack(
                 val animDuration = 400
                 val easeInOut = CubicBezierEasing(0.4f, 0f, 0.2f, 1f)
                 
-                val finalOffsetX = targetCenterX - centerCardBounds.center.x + containerBounds.left
-                val finalOffsetY = targetCenterY - centerCardBounds.center.y + containerBounds.top
+                val finalOffsetX = targetCenterX - centerCardBounds.center.x
+                val finalOffsetY = targetCenterY - centerCardBounds.center.y
                 
                 scope.launch { centerDragOffsetX.animateTo(finalOffsetX, tween(animDuration, easing = easeInOut)) }
                 scope.launch { centerDragOffsetY.animateTo(finalOffsetY, tween(animDuration, easing = easeInOut)) }
@@ -2436,21 +2419,21 @@ private fun DrawModeCardStack(
                 timeoutMs = if (shouldWaitLonger) 150L else 80L
             )
             
-            val targetCenterX: Float
-            val targetCenterY: Float
-            
-            if (tagBounds != null && tagBounds != Rect.Zero && containerBounds != Rect.Zero) {
-                val scaleCompensation = tagBounds.height * 0.05f
-                targetCenterX = tagBounds.center.x - containerBounds.left
-                targetCenterY = tagBounds.top - containerBounds.top - scaleCompensation
-            } else {
+            val fallbackTarget = if (containerBounds != Rect.Zero) {
                 val tagEstimatedWidth = with(density) { 65.dp.toPx() }
                 val tagSpacing = with(density) { 12.dp.toPx() }
                 val listPadding = with(density) { 24.dp.toPx() }
-                val tagsStartX = listPadding
-                targetCenterX = tagsStartX + targetIndex * (tagEstimatedWidth + tagSpacing) + tagEstimatedWidth / 2f
-                targetCenterY = containerBounds.height - with(density) { 80.dp.toPx() }
+                val tagsStartX = containerBounds.left + listPadding
+                Offset(
+                    x = tagsStartX + targetIndex * (tagEstimatedWidth + tagSpacing) + tagEstimatedWidth / 2f,
+                    y = containerBounds.bottom - with(density) { 80.dp.toPx() }
+                )
+            } else {
+                Offset.Zero
             }
+            val target = computeTagTargetInRoot(tagBounds, fallbackTarget)
+            val targetCenterX = target.x
+            val targetCenterY = target.y
             
             var bitmap = preloadedBitmap
             if (bitmap == null && isPreloading) {
@@ -2478,16 +2461,12 @@ private fun DrawModeCardStack(
             // 重要：加上当前的拖动偏移量，让 Genie 动画从实际松手位置开始，而非卡片原始位置
             val currentDragX = centerDragOffsetX.value
             val currentDragY = centerDragOffsetY.value
-            val relativeSourceBounds = if (containerBounds != Rect.Zero) {
-                Rect(
-                    left = centerCardBounds.left - containerBounds.left + currentDragX,
-                    top = centerCardBounds.top - containerBounds.top + currentDragY,
-                    right = centerCardBounds.right - containerBounds.left + currentDragX,
-                    bottom = centerCardBounds.bottom - containerBounds.top + currentDragY
-                )
-            } else {
-                centerCardBounds.translate(currentDragX, currentDragY)
-            }
+            val relativeSourceBounds = Rect(
+                left = centerCardBounds.left + currentDragX,
+                top = centerCardBounds.top + currentDragY,
+                right = centerCardBounds.right + currentDragX,
+                bottom = centerCardBounds.bottom + currentDragY
+            )
             
             if (bitmap != null) {
                 centerDragAlpha.snapTo(0f)
@@ -3288,17 +3267,5 @@ private fun DrawModeCardStack(
         }
         
         // ========== Genie Effect 覆盖层 ==========
-        if (genieController.isAnimating) {
-            GenieEffectOverlay(
-                bitmap = genieController.bitmap,
-                sourceBounds = genieController.sourceBounds,
-                targetX = genieController.targetX,
-                targetY = genieController.targetY,
-                progress = genieController.progress,
-                screenHeight = genieController.screenHeight,
-                direction = genieController.direction,
-                modifier = Modifier.zIndex(10f)
-            )
-        }
     }
 }

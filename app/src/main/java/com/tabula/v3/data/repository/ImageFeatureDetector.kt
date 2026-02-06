@@ -123,35 +123,114 @@ object ImageFeatureDetector {
 
     private fun detectMotionPhoto(context: Context, uri: Uri, xmp: String?): MotionPhotoInfo? {
         return try {
-            val xmpData = xmp ?: return null
             val fileLength = queryContentLength(context.contentResolver, uri) ?: return null
+            
+            // 如果有 XMP 元数据，优先使用 XMP 检测
+            if (xmp != null) {
+                // Motion Photo 1.0: use Item:Semantic="MotionPhoto" + Item:Length
+                val itemLength = extractMotionPhotoLength(xmp)
+                if (itemLength != null && itemLength > 0 && itemLength < fileLength) {
+                    val presentationTimestampUs = extractPresentationTimestampUs(xmp)
+                    return MotionPhotoInfo(
+                        videoStart = fileLength - itemLength,
+                        videoLength = itemLength,
+                        presentationTimestampUs = presentationTimestampUs
+                    )
+                }
 
-            // Motion Photo 1.0: use Item:Semantic="MotionPhoto" + Item:Length
-            val itemLength = extractMotionPhotoLength(xmpData)
-            if (itemLength != null && itemLength > 0 && itemLength < fileLength) {
-                val presentationTimestampUs = extractPresentationTimestampUs(xmpData)
-                return MotionPhotoInfo(
-                    videoStart = fileLength - itemLength,
-                    videoLength = itemLength,
-                    presentationTimestampUs = presentationTimestampUs
-                )
+                val microVideoOffset = extractMicroVideoOffset(xmp)
+                if (microVideoOffset != null && microVideoOffset > 0 && microVideoOffset < fileLength) {
+                    val presentationTimestampUs = extractPresentationTimestampUs(xmp)
+                    return MotionPhotoInfo(
+                        videoStart = fileLength - microVideoOffset,
+                        videoLength = microVideoOffset,
+                        presentationTimestampUs = presentationTimestampUs
+                    )
+                }
+                
+                // 检查 XMP 中是否有 Motion Photo 标记（即使没有偏移量）
+                if (containsMotionPhotoMarker(xmp)) {
+                    // 尝试使用末尾扫描方法
+                    val videoInfo = detectVideoByFileScan(context, uri, fileLength)
+                    if (videoInfo != null) {
+                        return videoInfo
+                    }
+                }
             }
-
-            val microVideoOffset = extractMicroVideoOffset(xmpData)
-            if (microVideoOffset != null && microVideoOffset > 0 && microVideoOffset < fileLength) {
-                val presentationTimestampUs = extractPresentationTimestampUs(xmpData)
-                return MotionPhotoInfo(
-                    videoStart = fileLength - microVideoOffset,
-                    videoLength = microVideoOffset,
-                    presentationTimestampUs = presentationTimestampUs
-                )
-            }
-
-            null
+            
+            // Fallback: 对于没有标准 XMP 的实况照片（如某些 vivo 格式），
+            // 尝试扫描文件末尾寻找视频标记
+            detectVideoByFileScan(context, uri, fileLength)
         } catch (e: Exception) {
             Log.w(TAG, "Motion photo detect failed: ${e.message}")
             null
         }
+    }
+    
+    /**
+     * 检测 XMP 中是否包含实况照片标记
+     * 支持多种厂商格式
+     */
+    private fun containsMotionPhotoMarker(xmp: String): Boolean {
+        val lowerXmp = xmp.lowercase()
+        return lowerXmp.contains("motionphoto") ||
+               lowerXmp.contains("microvideo") ||
+               lowerXmp.contains("livephoto") ||
+               lowerXmp.contains("movingphoto") ||
+               lowerXmp.contains("video/mp4") ||  // Container 中有视频项
+               lowerXmp.contains("video/quicktime")
+    }
+    
+    /**
+     * 通过扫描文件末尾检测嵌入的视频
+     * 这是一个 fallback 方法，用于处理没有标准 XMP 的实况照片
+     */
+    private fun detectVideoByFileScan(context: Context, uri: Uri, fileLength: Long): MotionPhotoInfo? {
+        if (fileLength < 1024) return null  // 文件太小，不可能包含视频
+        
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                // 跳到文件末尾检测 MP4/MOV 视频容器
+                // MP4 文件以 "ftyp" 开头，我们从后向前搜索
+                val searchSize = minOf(fileLength, 512 * 1024L).toInt()  // 最多搜索 512KB
+                val skipSize = fileLength - searchSize
+                if (skipSize > 0) {
+                    input.skip(skipSize)
+                }
+                
+                val buffer = ByteArray(searchSize)
+                val bytesRead = input.read(buffer)
+                if (bytesRead < 8) return null
+                
+                // 搜索 "ftyp" 标记 (MP4/MOV 格式标识)
+                val ftypPattern = byteArrayOf(0x66, 0x74, 0x79, 0x70)  // "ftyp"
+                for (i in 0 until (bytesRead - 8)) {
+                    // 检查是否是 box 头 + ftyp
+                    // MP4 box 格式: [4字节大小][4字节类型]
+                    if (buffer[i + 4] == ftypPattern[0] &&
+                        buffer[i + 5] == ftypPattern[1] &&
+                        buffer[i + 6] == ftypPattern[2] &&
+                        buffer[i + 7] == ftypPattern[3]) {
+                        
+                        val videoStart = skipSize + i
+                        val videoLength = fileLength - videoStart
+                        
+                        // 验证视频长度合理（至少 1KB，最多占文件 90%）
+                        if (videoLength >= 1024 && videoLength < fileLength * 0.9) {
+                            Log.d(TAG, "Detected motion photo by file scan: videoStart=$videoStart, videoLength=$videoLength")
+                            return MotionPhotoInfo(
+                                videoStart = videoStart,
+                                videoLength = videoLength,
+                                presentationTimestampUs = null
+                            )
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Video scan failed: ${e.message}")
+        }
+        return null
     }
 
     private fun readXmp(context: Context, uri: Uri): String? {
@@ -189,8 +268,35 @@ object ImageFeatureDetector {
     }
 
     private fun extractMicroVideoOffset(xmp: String): Long? {
-        return extractAttribute(xmp, "GCamera:MicroVideoOffset")?.toLongOrNull()
-            ?: extractAttribute(xmp, "Camera:MicroVideoOffset")?.toLongOrNull()
+        // Google 标准格式
+        extractAttribute(xmp, "GCamera:MicroVideoOffset")?.toLongOrNull()?.let { return it }
+        extractAttribute(xmp, "Camera:MicroVideoOffset")?.toLongOrNull()?.let { return it }
+        
+        // 华为/荣耀格式
+        extractAttribute(xmp, "HwMicroVideo:MicroVideoOffset")?.toLongOrNull()?.let { return it }
+        extractAttribute(xmp, "Huawei:MicroVideoOffset")?.toLongOrNull()?.let { return it }
+        
+        // vivo/iQOO 格式 - 可能使用以下标签
+        extractAttribute(xmp, "vivo:MicroVideoOffset")?.toLongOrNull()?.let { return it }
+        extractAttribute(xmp, "vivo:LivePhotoVideoOffset")?.toLongOrNull()?.let { return it }
+        extractAttribute(xmp, "BBK:MicroVideoOffset")?.toLongOrNull()?.let { return it }
+        
+        // OPPO/realme/OnePlus 格式
+        extractAttribute(xmp, "OPPO:MicroVideoOffset")?.toLongOrNull()?.let { return it }
+        extractAttribute(xmp, "OnePlus:MicroVideoOffset")?.toLongOrNull()?.let { return it }
+        
+        // 小米/红米 格式
+        extractAttribute(xmp, "Xiaomi:MicroVideoOffset")?.toLongOrNull()?.let { return it }
+        extractAttribute(xmp, "MIUI:MicroVideoOffset")?.toLongOrNull()?.let { return it }
+        
+        // 三星格式
+        extractAttribute(xmp, "Samsung:MicroVideoOffset")?.toLongOrNull()?.let { return it }
+        
+        // 通用格式变体
+        extractAttribute(xmp, "MicroVideoOffset")?.toLongOrNull()?.let { return it }
+        extractAttribute(xmp, "VideoOffset")?.toLongOrNull()?.let { return it }
+        
+        return null
     }
 
     

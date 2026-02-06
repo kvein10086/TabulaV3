@@ -937,9 +937,10 @@ class GenieAnimationController {
             targetValue = 1f,
             animationSpec = tween(
                 durationMillis = durationMs,
-                // macOS/iOS 风格的 ease-out 曲线
-                // 快速启动，优雅减速，感觉很"有重量"
-                easing = CubicBezierEasing(0.16f, 1f, 0.3f, 1f)
+                // 极致丝滑的 ease-out 曲线（优化版）
+                // 灵感来自 iOS 17 的弹性动画，开始快、结束缓慢平滑
+                // 控制点 (0.22, 1.0, 0.36, 1.0) 比原来更柔和
+                easing = CubicBezierEasing(0.2f, 0.9f, 0.25f, 1f)
             )
         ) {
             // 每帧更新进度，保证动画流畅

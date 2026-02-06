@@ -78,7 +78,7 @@ fun PrivacyPolicyScreen(
             )
             
             Text(
-                text = "最后更新日期：2025年2月",
+                text = "最后更新日期：2026年2月",
                 style = MaterialTheme.typography.bodySmall,
                 color = secondaryTextColor,
                 modifier = Modifier.padding(bottom = 24.dp)

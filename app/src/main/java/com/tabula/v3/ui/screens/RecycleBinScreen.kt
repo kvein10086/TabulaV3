@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.shape.CircleShape
@@ -55,6 +56,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.HelpOutline
+import androidx.compose.material.icons.outlined.SwapVert
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -162,10 +164,25 @@ fun RecycleBinScreen(
     // 帮助提示对话框
     var showHelpDialog by remember { mutableStateOf(false) }
     
+    // 排序状态：true = 最新在前（倒序），false = 最早在前（正序）
+    var sortDescending by remember { mutableStateOf(true) }
+    
+    // 网格滚动状态（以 sortDescending 为 key，切换排序时重建 state，直接从顶部开始）
+    val staggeredGridState = remember(sortDescending) { LazyStaggeredGridState() }
+    
+    // 排序后的图片列表（按移入回收站的时间排序）
+    val sortedImages = remember(deletedImages, sortDescending) {
+        if (sortDescending) {
+            deletedImages.sortedByDescending { it.deletedAt }
+        } else {
+            deletedImages.sortedBy { it.deletedAt }
+        }
+    }
+    
     // 滑动多选状态
-    val dragSelectState = remember(deletedImages) {
+    val dragSelectState = remember(sortedImages) {
         DragSelectState(
-            items = { deletedImages },
+            items = { sortedImages },
             itemKey = { it.id },
             selectedIds = { selectedImages },
             onSelectionChange = { newSelection ->
@@ -234,6 +251,8 @@ fun RecycleBinScreen(
                     itemCount = deletedImages.size,
                     textColor = textColor,
                     secondaryTextColor = secondaryTextColor,
+                    sortDescending = sortDescending,
+                    onToggleSort = { sortDescending = !sortDescending },
                     onBack = onNavigateBack,
                     onHelp = { showHelpDialog = true },
                     onClearAll = {
@@ -257,6 +276,7 @@ fun RecycleBinScreen(
                 
                 LazyVerticalStaggeredGrid(
                     columns = StaggeredGridCells.Fixed(3),
+                    state = staggeredGridState,
                     modifier = Modifier
                         .fillMaxSize()
                         .gridDragHandler(dragSelectState, isSelectionMode = isSelectionMode),
@@ -269,24 +289,26 @@ fun RecycleBinScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp), // 增加间距
                     verticalItemSpacing = 12.dp
                 ) {
-                    items(deletedImages, key = { it.id }) { image ->
+                    items(sortedImages, key = { it.id }) { image ->
                         val isSelected = selectedImages.contains(image.id)
                         
-                        // 使用 Box 包装并注册位置（窗口坐标系），支持滑动多选
+                        // 使用 Box 包装并注册位置（窗口坐标系），仅多选模式下追踪位置
                         Box(
-                            modifier = Modifier.onGloballyPositioned { coordinates ->
-                                val position = coordinates.positionInWindow()
-                                val size = coordinates.size
-                                dragSelectState.registerItemBounds(
-                                    image.id,
-                                    ItemBounds(
-                                        left = position.x,
-                                        top = position.y,
-                                        right = position.x + size.width,
-                                        bottom = position.y + size.height
+                            modifier = if (isSelectionMode) {
+                                Modifier.onGloballyPositioned { coordinates ->
+                                    val position = coordinates.positionInWindow()
+                                    val size = coordinates.size
+                                    dragSelectState.registerItemBounds(
+                                        image.id,
+                                        ItemBounds(
+                                            left = position.x,
+                                            top = position.y,
+                                            right = position.x + size.width,
+                                            bottom = position.y + size.height
+                                        )
                                     )
-                                )
-                            }
+                                }
+                            } else Modifier
                         ) {
                             RecycleBinItem(
                                 image = image,
@@ -305,7 +327,7 @@ fun RecycleBinScreen(
                                         }
                                     } else {
                                         // 打开全屏查看
-                                        val index = deletedImages.indexOf(image)
+                                        val index = sortedImages.indexOf(image)
                                         viewerState = ViewerState(index)
                                     }
                                 },
@@ -332,13 +354,13 @@ fun RecycleBinScreen(
         ) {
             viewerState?.let { state ->
                 FullScreenViewer(
-                    images = deletedImages,
+                    images = sortedImages,
                     initialIndex = state.initialIndex,
                     onDismiss = { viewerState = null },
                     onRestore = { image ->
                         onRestore(image)
                         // 如果删除完了就关闭查看器
-                        if (deletedImages.size <= 1) {
+                        if (sortedImages.size <= 1) {
                             viewerState = null
                         }
                     },
@@ -1273,6 +1295,8 @@ private fun RecycleBinTopBar(
     itemCount: Int,
     textColor: Color,
     secondaryTextColor: Color,
+    sortDescending: Boolean,
+    onToggleSort: () -> Unit,
     onBack: () -> Unit,
     onHelp: () -> Unit,
     onClearAll: () -> Unit
@@ -1313,6 +1337,20 @@ private fun RecycleBinTopBar(
         }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
+            // 排序按钮
+            if (itemCount > 1) {
+                IconButton(onClick = onToggleSort) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Outlined.SwapVert,
+                            contentDescription = if (sortDescending) "当前：最新在前" else "当前：最早在前",
+                            tint = secondaryTextColor,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+            
             // 帮助按钮
             IconButton(onClick = onHelp) {
                 Icon(

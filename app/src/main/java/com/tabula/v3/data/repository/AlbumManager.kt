@@ -638,10 +638,12 @@ class AlbumManager(private val context: Context) {
      * 
      * 重要：MediaStore 只返回包含图片的 bucket，所以空图集需要从元数据中恢复。
      */
-    suspend fun refreshAlbumsFromSystem() = withContext(Dispatchers.IO) {
+    suspend fun refreshAlbumsFromSystem(
+        preloadedBuckets: List<LocalImageRepository.SystemBucket>? = null
+    ) = withContext(Dispatchers.IO) {
         try {
-            // 1. 从系统相册获取所有 bucket（只包含有图片的相册）
-            val systemBuckets = imageRepository.getAllBucketsWithInfo()
+            // 1. 从系统相册获取所有 bucket（优先使用预加载数据，避免重复查询）
+            val systemBuckets = preloadedBuckets ?: imageRepository.getAllBucketsWithInfo()
             val systemBucketNames = systemBuckets.map { it.name }.toSet()
             
             // 2. 加载本地元数据
@@ -736,7 +738,9 @@ class AlbumManager(private val context: Context) {
     /**
      * 初始化（从系统相册加载图集）
      */
-    suspend fun initialize() = withContext(Dispatchers.IO) {
+    suspend fun initialize(
+        preloadedBuckets: List<LocalImageRepository.SystemBucket>? = null
+    ) = withContext(Dispatchers.IO) {
         val loadedMetadata = loadMetadata()
         _metadata.value = loadedMetadata
         _sourceImages.value = loadSourceImages()
@@ -747,7 +751,7 @@ class AlbumManager(private val context: Context) {
         // 初始化使用频率追踪器（用于智能排序）
         usageTracker.initialize()
         
-        refreshAlbumsFromSystem()
+        refreshAlbumsFromSystem(preloadedBuckets)
         Log.d(TAG, "AlbumManager initialized with system album integration, sourceImages=${_sourceImages.value.size} albums, excludedAlbums=${_excludedAlbumCount.value}")
     }
 

@@ -457,6 +457,120 @@ class LocalImageRepository(private val context: Context) {
     }
 
     /**
+     * 一次查询加载所有数据的返回结果
+     */
+    data class LoadResult(
+        val allImages: List<ImageFile>,
+        val imagesExcludingTabula: List<ImageFile>,
+        val systemBuckets: List<SystemBucket>
+    )
+
+    /**
+     * 一次查询加载所有数据
+     *
+     * 通过单次 MediaStore 查询获取所有图片数据，然后在内存中派生出：
+     * 1. 全部图片列表
+     * 2. 排除 Tabula 图集的图片列表（用于主界面卡片整理）
+     * 3. 系统相册信息（名称、数量、封面、路径）
+     *
+     * 性能优化：从原来的 3 次 MediaStore 查询减少到 1 次
+     */
+    suspend fun loadAllData(
+        sortOrder: SortOrder = SortOrder.DATE_MODIFIED_DESC
+    ): LoadResult = withContext(Dispatchers.IO) {
+        val allImages = mutableListOf<ImageFile>()
+        val imagesExcludingTabula = mutableListOf<ImageFile>()
+        // bucket name -> (image IDs ordered by date desc, relativePath)
+        val bucketMap = mutableMapOf<String, Pair<MutableList<Long>, String?>>()
+
+        val projectionWithPath = arrayOf(
+            MediaStore.Images.Media._ID,
+            MediaStore.Images.Media.DISPLAY_NAME,
+            MediaStore.Images.Media.DATE_MODIFIED,
+            MediaStore.Images.Media.SIZE,
+            MediaStore.Images.Media.WIDTH,
+            MediaStore.Images.Media.HEIGHT,
+            MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
+            MediaStore.Images.Media.ORIENTATION,
+            MediaStore.Images.Media.RELATIVE_PATH
+        )
+
+        contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            projectionWithPath,
+            null,
+            null,
+            sortOrder.toSqlString()
+        )?.use { cursor ->
+            val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+            val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+            val dateColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_MODIFIED)
+            val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.SIZE)
+            val widthColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.WIDTH)
+            val heightColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.HEIGHT)
+            val bucketColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
+            val orientationColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.ORIENTATION)
+            val relativePathColumn = cursor.getColumnIndex(MediaStore.Images.Media.RELATIVE_PATH)
+
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(idColumn)
+                val uri = ContentUris.withAppendedId(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    id
+                )
+                val bucketDisplayName = cursor.getString(bucketColumn)
+                val relativePath = if (relativePathColumn >= 0) {
+                    cursor.getString(relativePathColumn) ?: ""
+                } else ""
+
+                val imageFile = ImageFile(
+                    id = id,
+                    uri = uri,
+                    displayName = cursor.getString(nameColumn) ?: "unknown",
+                    dateModified = cursor.getLong(dateColumn) * 1000,
+                    size = cursor.getLong(sizeColumn),
+                    width = cursor.getInt(widthColumn),
+                    height = cursor.getInt(heightColumn),
+                    bucketDisplayName = bucketDisplayName,
+                    orientation = cursor.getInt(orientationColumn)
+                )
+
+                allImages.add(imageFile)
+
+                // 排除 Tabula 图集的照片
+                if (!relativePath.startsWith("Pictures/Tabula/", ignoreCase = true)) {
+                    imagesExcludingTabula.add(imageFile)
+                }
+
+                // 构建 bucket 信息（已按 date desc 排序，首个 ID 即为封面）
+                if (bucketDisplayName != null) {
+                    val existing = bucketMap[bucketDisplayName]
+                    if (existing != null) {
+                        existing.first.add(id)
+                    } else {
+                        bucketMap[bucketDisplayName] = Pair(
+                            mutableListOf(id),
+                            relativePath.trimEnd('/')
+                        )
+                    }
+                }
+            }
+        }
+
+        val systemBuckets = bucketMap.map { (name, data) ->
+            val (ids, path) = data
+            SystemBucket(
+                name = name,
+                imageCount = ids.size,
+                coverImageId = ids.firstOrNull(),
+                relativePath = path
+            )
+        }.sortedByDescending { it.imageCount }
+
+        LoadResult(allImages, imagesExcludingTabula, systemBuckets)
+    }
+
+    /**
      * 排序方式枚举
      */
     enum class SortOrder(val column: String, val ascending: Boolean) {

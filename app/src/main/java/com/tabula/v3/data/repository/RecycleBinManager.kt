@@ -42,7 +42,7 @@ class RecycleBinManager(private val context: Context) {
         val currentItems = loadRecycleBin().toMutableList()
         // 避免重复添加
         if (currentItems.none { it.id == image.id }) {
-            currentItems.add(image)
+            currentItems.add(image.copy(deletedAt = System.currentTimeMillis()))
             saveRecycleBin(currentItems)
         }
     }
@@ -52,9 +52,10 @@ class RecycleBinManager(private val context: Context) {
      */
     suspend fun addAllToRecycleBin(images: List<ImageFile>) = withContext(Dispatchers.IO) {
         val currentItems = loadRecycleBin().toMutableList()
+        val now = System.currentTimeMillis()
         images.forEach { image ->
             if (currentItems.none { it.id == image.id }) {
-                currentItems.add(image)
+                currentItems.add(image.copy(deletedAt = now))
             }
         }
         saveRecycleBin(currentItems)
@@ -102,11 +103,14 @@ class RecycleBinManager(private val context: Context) {
             
             val jsonArray = JSONArray(jsonString)
             val items = mutableListOf<ImageFile>()
+            var needsMigration = false
             
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
                 val bucket = obj.optString("bucketDisplayName", "")
                 val bucketDisplay = bucket.ifBlank { null }
+                val savedDeletedAt = obj.optLong("deletedAt", 0L)
+                if (savedDeletedAt == 0L) needsMigration = true
                 val imageFile = ImageFile(
                     id = obj.getLong("id"),
                     uri = Uri.parse(obj.getString("uri")),
@@ -115,9 +119,24 @@ class RecycleBinManager(private val context: Context) {
                     size = obj.getLong("size"),
                     width = obj.getInt("width"),
                     height = obj.getInt("height"),
-                    bucketDisplayName = bucketDisplay
+                    bucketDisplayName = bucketDisplay,
+                    deletedAt = savedDeletedAt
                 )
                 items.add(imageFile)
+            }
+            
+            // 迁移旧数据：为缺少 deletedAt 的条目按插入顺序分配时间戳
+            if (needsMigration) {
+                val migrated = items.mapIndexed { index, image ->
+                    if (image.deletedAt == 0L) {
+                        // 用递增序号保持原始插入顺序，确保小于任何真实时间戳
+                        image.copy(deletedAt = (index + 1).toLong())
+                    } else {
+                        image
+                    }
+                }
+                saveRecycleBin(migrated)
+                return@withContext migrated
             }
             
             items
@@ -143,6 +162,7 @@ class RecycleBinManager(private val context: Context) {
                     put("width", image.width)
                     put("height", image.height)
                     put("bucketDisplayName", image.bucketDisplayName ?: "")
+                    put("deletedAt", image.deletedAt)
                 }
                 jsonArray.put(obj)
             }
