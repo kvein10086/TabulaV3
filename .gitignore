@@ -18,3 +18,5 @@ local.properties
 # Android Studio builds
 app/build/
 build/
+
+.worktrees/
