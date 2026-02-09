@@ -25,10 +25,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.DragHandle
@@ -179,348 +179,348 @@ fun AlbumTagManagementScreen(
             )
         }
 
-        // ========== 内容区域 ==========
-        Column(
+        // ========== 内容区域（使用 LazyColumn 实现懒加载，大幅提升首屏性能）==========
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
         ) {
-            Spacer(modifier = Modifier.height(8.dp))
+            item(key = "spacer_top") {
+                Spacer(modifier = Modifier.height(8.dp))
+            }
 
             // =============================================
             // Section 1: 标签排序与显示
             // =============================================
-            CollapsibleTagSectionHeader(
-                title = "标签排序与显示",
-                description = "调整图集标签顺序，影响下滑归档时的标签排列。\n关闭可见性的图集不会在归档时显示。",
-                textColor = textColor,
-                secondaryTextColor = secondaryTextColor,
-                isExpanded = isTagOrderExpanded,
-                onToggleExpand = { isTagOrderExpanded = !isTagOrderExpanded }
-            )
+            item(key = "header_tag_order") {
+                CollapsibleTagSectionHeader(
+                    title = "标签排序与显示",
+                    description = "调整图集标签顺序，影响下滑归档时的标签排列。\n关闭可见性的图集不会在归档时显示。",
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor,
+                    isExpanded = isTagOrderExpanded,
+                    onToggleExpand = { isTagOrderExpanded = !isTagOrderExpanded }
+                )
+            }
 
-            AnimatedVisibility(
-                visible = isTagOrderExpanded,
-                enter = expandVertically(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    )
-                ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow)),
-                exit = shrinkVertically(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMedium
-                    )
-                ) + fadeOut(spring(stiffness = Spring.StiffnessHigh))
-            ) {
-                Column {
+            if (isTagOrderExpanded) {
+                item(key = "tag_order_spacer") {
                     Spacer(modifier = Modifier.height(8.dp))
-                    
-                    if (orderedAlbums.isEmpty()) {
-                        // 空状态
+                }
+
+                if (orderedAlbums.isEmpty()) {
+                    item(key = "tag_order_empty") {
                         TagEmptyCard(
                             cardColor = cardColor,
                             textColor = secondaryTextColor,
                             message = "暂无图集",
                             description = "创建图集后可在此管理标签"
                         )
-                    } else {
-                        // 标签排序列表
+                    }
+                } else {
+                    // 标签排序列表 - 使用 itemsIndexed 实现懒加载
+                    itemsIndexed(
+                        items = orderedAlbums,
+                        key = { _, album -> "tag_order_${album.id}" }
+                    ) { index, album ->
+                        val topShape = if (index == 0) 16.dp else 0.dp
+                        val bottomShape = if (index == orderedAlbums.lastIndex) 16.dp else 0.dp
+                        
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(16.dp))
+                                .clip(RoundedCornerShape(
+                                    topStart = topShape, topEnd = topShape,
+                                    bottomStart = bottomShape, bottomEnd = bottomShape
+                                ))
                                 .background(cardColor)
                         ) {
-                            orderedAlbums.forEachIndexed { index, album ->
-                                TagOrderItem(
-                                    album = album,
-                                    isFirst = index == 0,
-                                    isLast = index == orderedAlbums.lastIndex,
-                                    isVisible = !album.isHidden,
-                                    textColor = textColor,
-                                    secondaryTextColor = secondaryTextColor,
-                                    accentBlue = accentBlue,
-                                    onMoveUp = {
-                                        if (index > 0) {
-                                            HapticFeedback.lightTap(context)
-                                            val newList = orderedAlbums.toMutableList()
-                                            Collections.swap(newList, index, index - 1)
-                                            orderedAlbums = newList
-                                            onReorderAlbums(newList.map { it.id })
-                                        }
-                                    },
-                                    onMoveDown = {
-                                        if (index < orderedAlbums.lastIndex) {
-                                            HapticFeedback.lightTap(context)
-                                            val newList = orderedAlbums.toMutableList()
-                                            Collections.swap(newList, index, index + 1)
-                                            orderedAlbums = newList
-                                            onReorderAlbums(newList.map { it.id })
-                                        }
-                                    },
-                                    onToggleVisibility = {
+                            TagOrderItem(
+                                album = album,
+                                isFirst = index == 0,
+                                isLast = index == orderedAlbums.lastIndex,
+                                isVisible = !album.isHidden,
+                                textColor = textColor,
+                                secondaryTextColor = secondaryTextColor,
+                                accentBlue = accentBlue,
+                                onMoveUp = {
+                                    if (index > 0) {
                                         HapticFeedback.lightTap(context)
-                                        val newHidden = !album.isHidden
-                                        onToggleAlbumHidden(album.id, newHidden)
-                                        // 更新本地状态以即时反馈
-                                        orderedAlbums = orderedAlbums.map {
-                                            if (it.id == album.id) it.copy(isHidden = newHidden) else it
-                                        }
+                                        val newList = orderedAlbums.toMutableList()
+                                        Collections.swap(newList, index, index - 1)
+                                        orderedAlbums = newList
+                                        onReorderAlbums(newList.map { it.id })
                                     }
-                                )
-                                if (index < orderedAlbums.lastIndex) {
-                                    // 分割线
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(start = 56.dp)
-                                            .height(0.5.dp)
-                                            .background(dividerColor)
-                                    )
+                                },
+                                onMoveDown = {
+                                    if (index < orderedAlbums.lastIndex) {
+                                        HapticFeedback.lightTap(context)
+                                        val newList = orderedAlbums.toMutableList()
+                                        Collections.swap(newList, index, index + 1)
+                                        orderedAlbums = newList
+                                        onReorderAlbums(newList.map { it.id })
+                                    }
+                                },
+                                onToggleVisibility = {
+                                    HapticFeedback.lightTap(context)
+                                    val newHidden = !album.isHidden
+                                    onToggleAlbumHidden(album.id, newHidden)
+                                    orderedAlbums = orderedAlbums.map {
+                                        if (it.id == album.id) it.copy(isHidden = newHidden) else it
+                                    }
                                 }
+                            )
+                            if (index < orderedAlbums.lastIndex) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 56.dp)
+                                        .height(0.5.dp)
+                                        .background(dividerColor)
+                                )
                             }
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            item(key = "spacer_section1_2") {
+                Spacer(modifier = Modifier.height(28.dp))
+            }
 
             // =============================================
             // Section 2: 推荐屏蔽
             // =============================================
-            CollapsibleTagSectionHeader(
-                title = "推荐屏蔽",
-                description = "已屏蔽的图集中的照片不会出现在推荐流中。\n适用于已整理好、不希望再次推荐的图集。",
-                textColor = textColor,
-                secondaryTextColor = secondaryTextColor,
-                isExpanded = isExcludeExpanded,
-                onToggleExpand = { isExcludeExpanded = !isExcludeExpanded }
-            )
+            item(key = "header_exclude") {
+                CollapsibleTagSectionHeader(
+                    title = "推荐屏蔽",
+                    description = "已屏蔽的图集中的照片不会出现在推荐流中。\n适用于已整理好、不希望再次推荐的图集。",
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor,
+                    isExpanded = isExcludeExpanded,
+                    onToggleExpand = { isExcludeExpanded = !isExcludeExpanded }
+                )
+            }
 
-            AnimatedVisibility(
-                visible = isExcludeExpanded,
-                enter = expandVertically(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    )
-                ) + fadeIn(spring(stiffness = Spring.StiffnessMediumLow)),
-                exit = shrinkVertically(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMedium
-                    )
-                ) + fadeOut(spring(stiffness = Spring.StiffnessHigh))
-            ) {
-                Column {
+            if (isExcludeExpanded) {
+                item(key = "exclude_spacer") {
                     Spacer(modifier = Modifier.height(8.dp))
-                    
-                    if (orderedAlbums.isEmpty()) {
+                }
+
+                if (orderedAlbums.isEmpty()) {
+                    item(key = "exclude_empty") {
                         TagEmptyCard(
                             cardColor = cardColor,
                             textColor = secondaryTextColor,
                             message = "暂无图集",
                             description = "创建图集后可在此管理屏蔽"
                         )
-                    } else {
+                    }
+                } else {
+                    // 推荐屏蔽列表 - 使用 itemsIndexed 实现懒加载
+                    itemsIndexed(
+                        items = orderedAlbums,
+                        key = { _, album -> "exclude_${album.id}" }
+                    ) { index, album ->
+                        val isExcluded = album.id in excludedAlbumIds
+                        val topShape = if (index == 0) 16.dp else 0.dp
+                        val bottomShape = if (index == orderedAlbums.lastIndex) 16.dp else 0.dp
+
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(16.dp))
+                                .clip(RoundedCornerShape(
+                                    topStart = topShape, topEnd = topShape,
+                                    bottomStart = bottomShape, bottomEnd = bottomShape
+                                ))
                                 .background(cardColor)
                         ) {
-                            orderedAlbums.forEachIndexed { index, album ->
-                                val isExcluded = album.id in excludedAlbumIds
-                                ExcludeAlbumItem(
-                                    album = album,
-                                    isExcluded = isExcluded,
-                                    textColor = textColor,
-                                    secondaryTextColor = secondaryTextColor,
-                                    accentOrange = accentOrange,
-                                    onToggleExcluded = {
-                                        HapticFeedback.lightTap(context)
-                                        onToggleAlbumExcluded(album.id, !isExcluded)
-                                    }
-                                )
-                                if (index < orderedAlbums.lastIndex) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(start = 56.dp)
-                                            .height(0.5.dp)
-                                            .background(dividerColor)
-                                    )
+                            ExcludeAlbumItem(
+                                album = album,
+                                isExcluded = isExcluded,
+                                textColor = textColor,
+                                secondaryTextColor = secondaryTextColor,
+                                accentOrange = accentOrange,
+                                onToggleExcluded = {
+                                    HapticFeedback.lightTap(context)
+                                    onToggleAlbumExcluded(album.id, !isExcluded)
                                 }
+                            )
+                            if (index < orderedAlbums.lastIndex) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 56.dp)
+                                        .height(0.5.dp)
+                                        .background(dividerColor)
+                                )
                             }
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            item(key = "spacer_section2_3") {
+                Spacer(modifier = Modifier.height(28.dp))
+            }
 
             // =============================================
             // Section 3: 智能排序设置
             // =============================================
-            TagSectionHeader(
-                title = "智能排序",
-                description = "根据使用频率自动调整图集标签的排序。\n关闭后将始终使用手动排列的顺序。",
-                textColor = textColor,
-                secondaryTextColor = secondaryTextColor
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(cardColor)
-            ) {
-                // 主开关
-                SmartSortToggleItem(
-                    enabled = smartSortEnabled,
+            item(key = "smart_sort_section") {
+                TagSectionHeader(
+                    title = "智能排序",
+                    description = "根据使用频率自动调整图集标签的排序。\n关闭后将始终使用手动排列的顺序。",
                     textColor = textColor,
-                    secondaryTextColor = secondaryTextColor,
-                    accentColor = accentGreen,
-                    onToggle = {
-                        HapticFeedback.lightTap(context)
-                        smartSortEnabled = !smartSortEnabled
-                        preferences.smartSortEnabled = smartSortEnabled
-                        // 刷新图集以应用新的排序策略
-                        onRefreshAlbums()
-                    }
+                    secondaryTextColor = secondaryTextColor
                 )
 
-                // 子设置（仅在智能排序开启时可交互，关闭时灰显）
-                AnimatedVisibility(
-                    visible = smartSortEnabled,
-                    enter = expandVertically(tween(300)) + fadeIn(tween(300)),
-                    exit = shrinkVertically(tween(300)) + fadeOut(tween(200))
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(cardColor)
                 ) {
-                    Column {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = 16.dp)
-                                .height(0.5.dp)
-                                .background(dividerColor)
-                        )
+                    SmartSortToggleItem(
+                        enabled = smartSortEnabled,
+                        textColor = textColor,
+                        secondaryTextColor = secondaryTextColor,
+                        accentColor = accentGreen,
+                        onToggle = {
+                            HapticFeedback.lightTap(context)
+                            smartSortEnabled = !smartSortEnabled
+                            preferences.smartSortEnabled = smartSortEnabled
+                            onRefreshAlbums()
+                        }
+                    )
 
-                        // 时间衰减灵敏度
-                        SmartSortSliderItem(
-                            title = "时间衰减灵敏度",
-                            description = "越高越侧重最近使用的图集",
-                            value = timeDecay,
-                            valueRange = 0.01f..0.20f,
-                            labelLow = "缓慢",
-                            labelHigh = "敏锐",
-                            textColor = textColor,
-                            secondaryTextColor = secondaryTextColor,
-                            accentColor = accentBlue,
-                            onValueChange = { newValue ->
-                                timeDecay = newValue
-                            },
-                            onValueChangeFinished = {
-                                preferences.smartSortTimeDecay = timeDecay
-                                onRefreshAlbums()
-                            }
-                        )
+                    AnimatedVisibility(
+                        visible = smartSortEnabled,
+                        enter = expandVertically(tween(300)) + fadeIn(tween(300)),
+                        exit = shrinkVertically(tween(300)) + fadeOut(tween(200))
+                    ) {
+                        Column {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 16.dp)
+                                    .height(0.5.dp)
+                                    .background(dividerColor)
+                            )
 
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = 16.dp)
-                                .height(0.5.dp)
-                                .background(dividerColor)
-                        )
+                            SmartSortSliderItem(
+                                title = "时间衰减灵敏度",
+                                description = "越高越侧重最近使用的图集",
+                                value = timeDecay,
+                                valueRange = 0.01f..0.20f,
+                                labelLow = "缓慢",
+                                labelHigh = "敏锐",
+                                textColor = textColor,
+                                secondaryTextColor = secondaryTextColor,
+                                accentColor = accentBlue,
+                                onValueChange = { newValue ->
+                                    timeDecay = newValue
+                                },
+                                onValueChangeFinished = {
+                                    preferences.smartSortTimeDecay = timeDecay
+                                    onRefreshAlbums()
+                                }
+                            )
 
-                        // 连续归类抑制
-                        SmartSortSliderItem(
-                            title = "连续归类抑制",
-                            description = "越强越抑制同一图集连续归类的加权",
-                            value = consecutiveDecay,
-                            valueRange = 0.3f..1.0f,
-                            labelLow = "强",
-                            labelHigh = "弱",
-                            textColor = textColor,
-                            secondaryTextColor = secondaryTextColor,
-                            accentColor = accentBlue,
-                            onValueChange = { newValue ->
-                                consecutiveDecay = newValue
-                            },
-                            onValueChangeFinished = {
-                                preferences.smartSortConsecutiveDecay = consecutiveDecay
-                                onRefreshAlbums()
-                            }
-                        )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 16.dp)
+                                    .height(0.5.dp)
+                                    .background(dividerColor)
+                            )
 
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = 16.dp)
-                                .height(0.5.dp)
-                                .background(dividerColor)
-                        )
+                            SmartSortSliderItem(
+                                title = "连续归类抑制",
+                                description = "越强越抑制同一图集连续归类的加权",
+                                value = consecutiveDecay,
+                                valueRange = 0.3f..1.0f,
+                                labelLow = "强",
+                                labelHigh = "弱",
+                                textColor = textColor,
+                                secondaryTextColor = secondaryTextColor,
+                                accentColor = accentBlue,
+                                onValueChange = { newValue ->
+                                    consecutiveDecay = newValue
+                                },
+                                onValueChangeFinished = {
+                                    preferences.smartSortConsecutiveDecay = consecutiveDecay
+                                    onRefreshAlbums()
+                                }
+                            )
 
-                        // 手动排序有效期
-                        SmartSortLockDaysItem(
-                            lockDays = lockDays,
-                            textColor = textColor,
-                            secondaryTextColor = secondaryTextColor,
-                            onClick = {
-                                HapticFeedback.lightTap(context)
-                                showLockDaysSheet = true
-                            }
-                        )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 16.dp)
+                                    .height(0.5.dp)
+                                    .background(dividerColor)
+                            )
+
+                            SmartSortLockDaysItem(
+                                lockDays = lockDays,
+                                textColor = textColor,
+                                secondaryTextColor = secondaryTextColor,
+                                onClick = {
+                                    HapticFeedback.lightTap(context)
+                                    showLockDaysSheet = true
+                                }
+                            )
+                        }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            item(key = "spacer_section3_4") {
+                Spacer(modifier = Modifier.height(28.dp))
+            }
 
             // =============================================
             // Section 4: 重置排序
             // =============================================
-            TagSectionHeader(
-                title = "重置",
-                description = "清除所有手动排序和使用记录，恢复默认排序。",
-                textColor = textColor,
-                secondaryTextColor = secondaryTextColor
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // 重置按钮
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(cardColor)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) {
-                        HapticFeedback.lightTap(context)
-                        showResetConfirm = true
-                    }
-                    .padding(vertical = 14.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "重置标签排序",
-                    color = accentRed,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium
+            item(key = "reset_section") {
+                TagSectionHeader(
+                    title = "重置",
+                    description = "清除所有手动排序和使用记录，恢复默认排序。",
+                    textColor = textColor,
+                    secondaryTextColor = secondaryTextColor
                 )
-            }
 
-            Spacer(modifier = Modifier.height(32.dp))
-            Spacer(modifier = Modifier.navigationBarsPadding())
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(cardColor)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            HapticFeedback.lightTap(context)
+                            showResetConfirm = true
+                        }
+                        .padding(vertical = 14.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "重置标签排序",
+                        color = accentRed,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(32.dp))
+                Spacer(modifier = Modifier.navigationBarsPadding())
+            }
         }
     }
 
@@ -889,11 +889,14 @@ private fun TagOrderItem(
             contentAlignment = Alignment.Center
         ) {
             if (album.coverImageId != null) {
-                // 显示封面图
+                // 显示封面图 — 性能优化：指定小尺寸 + 启用硬件位图 + 缓存
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data("content://media/external/images/media/${album.coverImageId}")
-                        .crossfade(true)
+                        .size(120, 120)
+                        .crossfade(100)
+                        .memoryCacheKey("tag_cover_${album.coverImageId}")
+                        .allowHardware(true)
                         .build(),
                     contentDescription = album.name,
                     contentScale = ContentScale.Crop,
@@ -982,11 +985,14 @@ private fun ExcludeAlbumItem(
             contentAlignment = Alignment.Center
         ) {
             if (album.coverImageId != null) {
-                // 显示封面图
+                // 显示封面图 — 性能优化：指定小尺寸 + 启用硬件位图 + 缓存
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data("content://media/external/images/media/${album.coverImageId}")
-                        .crossfade(true)
+                        .size(120, 120)
+                        .crossfade(100)
+                        .memoryCacheKey("exclude_cover_${album.coverImageId}")
+                        .allowHardware(true)
                         .build(),
                     contentDescription = album.name,
                     contentScale = ContentScale.Crop,

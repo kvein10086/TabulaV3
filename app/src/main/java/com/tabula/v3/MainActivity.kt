@@ -747,6 +747,21 @@ fun TabulaApp(
             onNavigateToOtherAlbums = { otherAlbumsList ->
                 otherAlbumsForNavigation = otherAlbumsList
                 currentScreen = AppScreen.OTHER_ALBUMS
+            },
+            // 原图清理
+            pendingCleanupCount = pendingSourceImageUris.size,
+            onCleanupSourceImages = {
+                scope.launch {
+                    // 重新获取最新的待清理原图（用户可能又归类了新照片）
+                    val cleanableResult = albumManager.getCleanableUrisForAllAlbums()
+                    if (!cleanableResult.isEmpty && cleanableResult.sourceUris.isNotEmpty()) {
+                        pendingSourceImageUris = cleanableResult.sourceUris
+                        showSourceImageDeletionDialog = true
+                    } else {
+                        pendingSourceImageUris = emptyList()
+                        Toast.makeText(context, "没有需要清理的原图", Toast.LENGTH_SHORT).show()
+                    }
+                }
             }
         )
     }
@@ -1349,10 +1364,12 @@ fun TabulaApp(
                 imageCount = pendingSourceImageUris.size,
                 onConfirm = {
                     showSourceImageDeletionDialog = false
+                    val urisToDelete = pendingSourceImageUris
+                    pendingSourceImageUris = emptyList()  // 立即清空，隐藏清理按钮
                     scope.launch {
-                        Toast.makeText(context, "正在删除 ${pendingSourceImageUris.size} 张原图...", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "正在删除 ${urisToDelete.size} 张原图...", Toast.LENGTH_SHORT).show()
                         
-                        performDeleteUris(pendingSourceImageUris) { deletedUris ->
+                        performDeleteUris(urisToDelete) { deletedUris ->
                             if (deletedUris.isNotEmpty()) {
                                 scope.launch {
                                     albumManager.clearDeletedUris(deletedUris)
@@ -1366,6 +1383,8 @@ fun TabulaApp(
                                 }
                                 Toast.makeText(context, "已删除 ${deletedUris.size} 张原图", Toast.LENGTH_SHORT).show()
                             } else {
+                                // 删除失败或取消，恢复待清理列表
+                                pendingSourceImageUris = urisToDelete
                                 Toast.makeText(context, "删除失败或已取消", Toast.LENGTH_SHORT).show()
                             }
                         }

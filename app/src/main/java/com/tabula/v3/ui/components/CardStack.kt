@@ -5,7 +5,6 @@ import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -359,10 +358,10 @@ fun SwipeableCardStack(
     // ========== Box容器位置记录（用于坐标转换）==========
     var containerBounds by remember { mutableStateOf(Rect.Zero) }
 
-    // 获取三张卡的数据
+    // 获取三张卡的数据（不使用取模，避免首尾卡片重复显示）
     val currentImage = images.getOrNull(currentIndex)
-    val nextImage = images.getOrNull((currentIndex + 1) % images.size)
-    val prevImage = images.getOrNull((currentIndex - 1 + images.size) % images.size)
+    val nextImage = images.getOrNull(currentIndex + 1)
+    val prevImage = images.getOrNull(currentIndex - 1)
 
     // 检查边界
     val hasNext = currentIndex < images.lastIndex
@@ -2549,13 +2548,9 @@ private fun DrawModeCardStack(
                             alpha = leftCardAlpha.value
                         }
                         // 消费 pointer 事件，防止穿透到中卡
+                        // 性能优化：使用 detectTapGestures 替代无限循环，减少空闲CPU开销
                         .pointerInput(Unit) {
-                            awaitEachGesture {
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    event.changes.forEach { it.consume() }
-                                }
-                            }
+                            detectTapGestures { /* consume tap, do nothing */ }
                         },
                     cornerRadius = 16.dp,
                     elevation = 4.dp,
@@ -2669,13 +2664,10 @@ private fun DrawModeCardStack(
                             rotationZ = 5f
                             alpha = rightCardAlpha.value
                         }
+                        // 消费 pointer 事件，防止穿透到中卡
+                        // 性能优化：使用 detectTapGestures 替代无限循环，减少空闲CPU开销
                         .pointerInput(Unit) {
-                            awaitEachGesture {
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    event.changes.forEach { it.consume() }
-                                }
-                            }
+                            detectTapGestures { /* consume tap, do nothing */ }
                         },
                     cornerRadius = 16.dp,
                     elevation = 4.dp,

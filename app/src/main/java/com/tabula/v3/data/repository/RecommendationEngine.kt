@@ -183,22 +183,40 @@ class RecommendationEngine(
         }
         
         val result = mutableListOf<ImageFile>()
+        val usedIds = mutableSetOf<Long>()  // 防止批次内重复
         
         // 优先从可用照片中随机抽取
         val shuffledAvailable = availableImages.shuffled()
         val newlyPicked = shuffledAvailable.take(batchSize)
-        result.addAll(newlyPicked)
+        for (img in newlyPicked) {
+            if (img.id !in usedIds) {
+                result.add(img)
+                usedIds.add(img.id)
+            }
+        }
         
         // 如果可用照片不足，从冷却中的照片补充（优先选择冷却期即将结束的）
         if (result.size < batchSize && cooldownImages.isNotEmpty()) {
             val sortedCooldown = cooldownImages.sortedBy { 
                 preferences.getImagePickedTimestamp(it.id) 
             }
-            result.addAll(sortedCooldown.take(batchSize - result.size))
+            for (img in sortedCooldown) {
+                if (result.size >= batchSize) break
+                if (img.id !in usedIds) {
+                    result.add(img)
+                    usedIds.add(img.id)
+                }
+            }
         }
         
         // 只记录新抽取的照片（不在冷却中的），避免重置从冷却中补充的照片的冷却期
         preferences.recordImagesPicked(newlyPicked.map { it.id })
+        
+        // 如果总照片数 <= batchSize，清理冷却池避免无限循环
+        if (allImages.size <= batchSize) {
+            android.util.Log.d(TAG, "Total images (${allImages.size}) <= batchSize ($batchSize), clearing cooldown to prevent loop")
+            preferences.clearAllPickRecords()
+        }
         
         return result
     }

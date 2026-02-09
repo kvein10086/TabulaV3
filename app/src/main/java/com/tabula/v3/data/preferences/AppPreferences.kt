@@ -262,14 +262,6 @@ class AppPreferences(context: Context) {
         }
 
     /**
-     * 屏蔽人像功能开关（实验室功能）
-     * 启用后，浏览卡片时自动跳过包含人脸的照片
-     */
-    var faceBlockEnabled: Boolean
-        get() = prefs.getBoolean(KEY_FACE_BLOCK_ENABLED, false)
-        set(value) = prefs.edit().putBoolean(KEY_FACE_BLOCK_ENABLED, value).apply()
-
-    /**
      * 是否已完成引导流程
      * 首次启动时为 false，完成引导后设为 true
      */
@@ -514,6 +506,16 @@ class AppPreferences(context: Context) {
         // 使用 commit() 同步执行，确保移除完成后再返回
         // 这样后续获取新批次时，这些照片不会被排除
         editor.commit()
+    }
+    
+    /**
+     * 清除所有照片冷却记录
+     * 
+     * 当总照片数量 <= batchSize 时调用，避免少量照片场景下
+     * 所有照片都进入冷却池导致无限循环推送同一批照片。
+     */
+    fun clearAllPickRecords() {
+        pickTimestampsPrefs.edit().clear().commit()
     }
     
     // ==================== 相似组冷却机制（独立于随机漫步模式）====================
@@ -1022,7 +1024,6 @@ class AppPreferences(context: Context) {
         private const val KEY_CARD_STYLE_MODE = "card_style_mode"
         private const val KEY_SWIPE_STYLE = "swipe_style"
         private const val KEY_LIQUID_GLASS_LAB_ENABLED = "liquid_glass_lab_enabled"
-        private const val KEY_FACE_BLOCK_ENABLED = "face_block_enabled"
         private const val KEY_HAS_COMPLETED_ONBOARDING = "has_completed_onboarding"
         
         // 快捷操作按钮相关

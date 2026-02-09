@@ -105,9 +105,10 @@ fun ImageCard(
                 .diskCacheKey(cacheKey)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .diskCachePolicy(CachePolicy.ENABLED)
-                // 性能优化：禁用硬件位图，避免 HDR/大图解码问题
-                .allowHardware(false)
-                .crossfade(150)
+                // 性能优化：启用硬件位图加速解码和渲染
+                // Genie 动画需要的 Bitmap 会单独加载（allowHardware=false）
+                .allowHardware(true)
+                .crossfade(100)
                 .build(),
             contentDescription = imageFile.displayName,
             imageLoader = imageLoader,

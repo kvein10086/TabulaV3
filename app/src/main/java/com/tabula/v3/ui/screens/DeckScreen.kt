@@ -40,6 +40,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Close
@@ -236,7 +237,10 @@ fun DeckScreen(
     selectedCleanupAlbum: Album? = null,
     onSelectedCleanupAlbumChange: (Album?) -> Unit = {},
     // "其他图集"导航
-    onNavigateToOtherAlbums: (List<Album>) -> Unit = {}
+    onNavigateToOtherAlbums: (List<Album>) -> Unit = {},
+    // 原图清理
+    pendingCleanupCount: Int = 0,
+    onCleanupSourceImages: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val isDarkTheme = LocalIsDarkTheme.current
@@ -797,11 +801,16 @@ fun DeckScreen(
     val slideProgress by animateFloatAsState(
         targetValue = if (isAlbumMode) 1f else 0f,
         animationSpec = tween(
-            durationMillis = 350,
-            easing = FastOutSlowInEasing  // 开始快、结尾慢，丝滑自然
+            durationMillis = 280,  // 从 350ms 降到 280ms，减少双视图同时渲染的时间
+            easing = FastOutSlowInEasing
         ),
         label = "slide_progress"
     )
+    
+    // 性能优化：记录是否曾进入过图集模式，一旦进入过就保持 AlbumsGridContent 在组合树中
+    // 避免反复切换时的重组开销
+    var hasEverEnteredAlbumMode by remember { mutableStateOf(isAlbumMode) }
+    if (isAlbumMode) hasEverEnteredAlbumMode = true
     
     Box(
         modifier = Modifier
@@ -841,8 +850,8 @@ fun DeckScreen(
                     val scale = 1f - 0.05f * slideProgress
                     scaleX = scale
                     scaleY = scale
-                    // 渐隐效果
-                    alpha = 1f - 0.3f * slideProgress
+                    // 渐隐效果：完全移出时设为0跳过绘制
+                    alpha = if (slideProgress >= 0.99f) 0f else 1f - 0.3f * slideProgress
                 }
         ) { state ->
             when (state) {
@@ -1073,9 +1082,10 @@ fun DeckScreen(
             }
         }
 
-        // ========== 预渲染的图集界面（始终存在，通过滑动控制显示）==========
-        // 性能优化：避免切换时的组件初始化延迟
-        if (slideProgress > 0f || isAlbumMode) {
+        // ========== 预渲染的图集界面 ==========
+        // 性能优化：一旦进入过图集模式，保持 AlbumsGridContent 在组合树中
+        // 后续切换时只需移动 graphicsLayer 位置，无需重新组合，消除切换卡顿
+        if (hasEverEnteredAlbumMode || slideProgress > 0f) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -1101,7 +1111,9 @@ fun DeckScreen(
                     onSettingsClick = onNavigateToSettings,
                     showHiddenAlbums = showHiddenAlbums,
                     onToggleShowHidden = onToggleShowHidden,
-                    onNavigateToOtherAlbums = onNavigateToOtherAlbums
+                    onNavigateToOtherAlbums = onNavigateToOtherAlbums,
+                    pendingCleanupCount = pendingCleanupCount,
+                    onCleanupSourceImages = onCleanupSourceImages
                 )
             }
         }
@@ -2234,7 +2246,9 @@ private fun AlbumsGridContent(
     onSettingsClick: () -> Unit = {},
     showHiddenAlbums: Boolean = false,
     onToggleShowHidden: () -> Unit = {},
-    onNavigateToOtherAlbums: (List<Album>) -> Unit = {}
+    onNavigateToOtherAlbums: (List<Album>) -> Unit = {},
+    pendingCleanupCount: Int = 0,
+    onCleanupSourceImages: () -> Unit = {}
 ) {
     val isDarkTheme = LocalIsDarkTheme.current
     val context = LocalContext.current
@@ -2476,6 +2490,20 @@ private fun AlbumsGridContent(
                                     } else {
                                         buttonIconColor
                                     }
+                                )
+                            }
+                            
+                            // 清理原图按钮（有待清理的原图时显示）
+                            if (pendingCleanupCount > 0) {
+                                ActionIconButton(
+                                    icon = Icons.Outlined.CleaningServices,
+                                    contentDescription = "清理原图",
+                                    onClick = {
+                                        com.tabula.v3.ui.util.HapticFeedback.lightTap(context)
+                                        onCleanupSourceImages()
+                                    },
+                                    backgroundColor = Color(0xFFFF9500).copy(alpha = 0.15f),
+                                    iconColor = Color(0xFFFF9500)
                                 )
                             }
                             

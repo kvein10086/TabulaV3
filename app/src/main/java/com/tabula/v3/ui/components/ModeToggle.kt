@@ -118,7 +118,7 @@ fun ModeToggle(
                 ambientColor = Color.Black.copy(alpha = shadowAlpha * 0.6f)
             ),
         shape = RoundedCornerShape(100),
-        blurRadius = if (isDarkTheme) 20.dp else 34.dp,
+        blurRadius = if (isDarkTheme) 16.dp else 20.dp,  // 性能优化：降低模糊半径，减少GPU开销
         tint = containerTint,
         borderBrush = borderBrush,
         borderWidth = if (isDarkTheme) 0.dp else 1.dp,
