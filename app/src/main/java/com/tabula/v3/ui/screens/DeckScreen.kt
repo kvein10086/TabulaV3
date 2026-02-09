@@ -130,6 +130,7 @@ import com.tabula.v3.ui.components.AlbumSelectionSheet
 import com.tabula.v3.data.repository.AlbumCleanupEngine
 import com.tabula.v3.data.repository.AlbumCleanupInfo
 import com.tabula.v3.data.repository.AlbumCleanupBatch
+import com.tabula.v3.di.CoilSetup
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -245,6 +246,7 @@ fun DeckScreen(
     val context = LocalContext.current
     val isDarkTheme = LocalIsDarkTheme.current
     val appPreferences = rememberAppPreferences()
+    val imageLoader = remember(context) { CoilSetup.getImageLoader(context) }
     
     // 背景颜色 - 纯白/纯黑，液态玻璃效果只在卡片上
     val backgroundColor = if (isDarkTheme) Color.Black else Color(0xFFF2F2F7)
@@ -390,8 +392,6 @@ fun DeckScreen(
                 preloadedNextBatch = nextBatch
                 
                 // 只预加载前 3 张图片，使用低优先级
-                val imageLoader = coil.ImageLoader.Builder(context)
-                    .build()
                 nextBatch.images.take(3).forEach { image ->
                     val request = coil.request.ImageRequest.Builder(context)
                         .data(image.uri)

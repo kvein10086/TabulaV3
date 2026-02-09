@@ -4,6 +4,7 @@ package com.tabula.v3.ui.navigation
  * 应用屏幕枚举
  */
 enum class AppScreen {
+    DISCLAIMER,       // 使用前须知
     ONBOARDING,       // 引导页
     PERSONALIZATION,  // 个性化设置
     DECK,             // 主界面（卡片堆叠）

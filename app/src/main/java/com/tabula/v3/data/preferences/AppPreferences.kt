@@ -269,6 +269,14 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_HAS_COMPLETED_ONBOARDING, false)
         set(value) = prefs.edit().putBoolean(KEY_HAS_COMPLETED_ONBOARDING, value).apply()
 
+    /**
+     * 是否已确认使用前须知
+     * 首次启动时为 false，确认后设为 true，不再弹出
+     */
+    var hasAcknowledgedDisclaimer: Boolean
+        get() = prefs.getBoolean(KEY_HAS_ACKNOWLEDGED_DISCLAIMER, false)
+        set(value) = prefs.edit().putBoolean(KEY_HAS_ACKNOWLEDGED_DISCLAIMER, value).apply()
+
     // ==================== 智能排序设置 ====================
 
     /**
@@ -316,11 +324,11 @@ class AppPreferences(context: Context) {
      */
     var sourceImageDeletionStrategy: SourceImageDeletionStrategy
         get() {
-            val value = prefs.getString(KEY_SOURCE_IMAGE_DELETION_STRATEGY, SourceImageDeletionStrategy.MANUAL_IN_ALBUMS.name)
+            val value = prefs.getString(KEY_SOURCE_IMAGE_DELETION_STRATEGY, SourceImageDeletionStrategy.ASK_EVERY_TIME.name)
             return try {
-                SourceImageDeletionStrategy.valueOf(value ?: SourceImageDeletionStrategy.MANUAL_IN_ALBUMS.name)
+                SourceImageDeletionStrategy.valueOf(value ?: SourceImageDeletionStrategy.ASK_EVERY_TIME.name)
             } catch (e: Exception) {
-                SourceImageDeletionStrategy.MANUAL_IN_ALBUMS
+                SourceImageDeletionStrategy.ASK_EVERY_TIME
             }
         }
         set(value) {
@@ -1025,6 +1033,7 @@ class AppPreferences(context: Context) {
         private const val KEY_SWIPE_STYLE = "swipe_style"
         private const val KEY_LIQUID_GLASS_LAB_ENABLED = "liquid_glass_lab_enabled"
         private const val KEY_HAS_COMPLETED_ONBOARDING = "has_completed_onboarding"
+        private const val KEY_HAS_ACKNOWLEDGED_DISCLAIMER = "has_acknowledged_disclaimer"
         
         // 快捷操作按钮相关
         private const val KEY_QUICK_ACTION_ENABLED = "quick_action_enabled"

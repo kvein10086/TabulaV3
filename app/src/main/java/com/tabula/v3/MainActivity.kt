@@ -1,6 +1,5 @@
 package com.tabula.v3
 
-import android.Manifest
 import android.graphics.Color as AndroidColor
 import android.app.Activity
 import android.content.Intent
@@ -72,6 +71,7 @@ import com.tabula.v3.data.repository.RecycleBinManager
 import com.tabula.v3.data.repository.RecommendationEngine
 import com.tabula.v3.data.repository.AlbumCleanupEngine
 import com.tabula.v3.data.repository.AlbumCleanupInfo
+import com.tabula.v3.permission.MediaPermissionPolicy
 import com.tabula.v3.ui.navigation.AppScreen
 import com.tabula.v3.ui.navigation.PredictiveBackContainer
 import com.tabula.v3.ui.screens.AboutScreen
@@ -88,7 +88,7 @@ import com.tabula.v3.ui.screens.AlbumViewScreen
 import com.tabula.v3.ui.screens.SystemAlbumViewScreen
 import com.tabula.v3.ui.screens.OnboardingScreen
 import com.tabula.v3.ui.screens.PersonalizationScreen
-
+import com.tabula.v3.ui.screens.DisclaimerScreen
 import com.tabula.v3.ui.screens.PrivacyPolicyScreen
 import com.tabula.v3.ui.screens.TutorialScreen
 import com.tabula.v3.ui.screens.OtherAlbumsScreen
@@ -127,28 +127,25 @@ class MainActivity : ComponentActivity() {
 
     // 权限请求
     private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        hasPermission = isGranted
-        
-        // 权限被拒绝后的处理
-        if (!isGranted) {
-            // 检查是否应该显示权限说明（如果返回 false，表示用户选择了"不再询问"）
-            val permission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                Manifest.permission.READ_MEDIA_IMAGES
-            } else {
-                Manifest.permission.READ_EXTERNAL_STORAGE
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grantResults ->
+        val sdkInt = android.os.Build.VERSION.SDK_INT
+        hasPermission = MediaPermissionPolicy.hasMediaReadPermission(sdkInt) { permission ->
+            grantResults[permission] == true ||
+                ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+        }
+
+        if (!hasPermission) {
+            val requestedPermissions = MediaPermissionPolicy.requiredPermissionsForSdk(sdkInt)
+            val shouldShowRationale = requestedPermissions.any { permission ->
+                shouldShowRequestPermissionRationale(permission)
             }
-            
-            val shouldShowRationale = shouldShowRequestPermissionRationale(permission)
             if (!shouldShowRationale) {
-                // 用户选择了"不再询问"，提示前往设置开启权限
                 Log.w("MainActivity", "Permission permanently denied, user should enable it in settings")
             }
         }
     }
 
-    // 删除权限请求（Android 11+ MediaStore 删除确认）
     private lateinit var deletePermissionLauncher: ActivityResultLauncher<IntentSenderRequest>
     private var onDeletePermissionResult: ((Boolean) -> Unit)? = null
 
@@ -247,25 +244,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkPermission() {
-        val permission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            // Android 13+ 使用细粒度媒体权限
-            Manifest.permission.READ_MEDIA_IMAGES
-        } else {
-            // Android 12 使用旧权限
-            Manifest.permission.READ_EXTERNAL_STORAGE
+        val sdkInt = android.os.Build.VERSION.SDK_INT
+        hasPermission = MediaPermissionPolicy.hasMediaReadPermission(sdkInt) { permission ->
+            ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
         }
-        hasPermission = ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestPermission() {
-        val permission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            // Android 13+ 使用细粒度媒体权限
-            Manifest.permission.READ_MEDIA_IMAGES
-        } else {
-            // Android 12 使用旧权限
-            Manifest.permission.READ_EXTERNAL_STORAGE
-        }
-        permissionLauncher.launch(permission)
+        val permissions = MediaPermissionPolicy.requiredPermissionsForSdk(android.os.Build.VERSION.SDK_INT)
+        permissionLauncher.launch(permissions)
     }
     
 }
@@ -285,6 +272,10 @@ fun TabulaApp(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // ========== 使用前须知状态 ==========
+    // 只在首次启动时显示，确认后不再弹出
+    var showDisclaimer by rememberSaveable { mutableStateOf(!preferences.hasAcknowledgedDisclaimer) }
 
     // ========== 引导流程状态 ==========
     // 只在首次启动时显示引导流程
@@ -323,8 +314,16 @@ fun TabulaApp(
     var quickActionButtonY by remember { mutableFloatStateOf(preferences.quickActionButtonY) }
 
     // ========== 路由状态 ==========
-    // 如果需要显示引导，则初始屏幕为 ONBOARDING，否则为 DECK
-    var currentScreen by remember { mutableStateOf(if (showOnboarding) AppScreen.ONBOARDING else AppScreen.DECK) }
+    // 启动顺序：引导页 -> 个性化设置 -> 使用前须知 -> 主界面
+    var currentScreen by remember {
+        mutableStateOf(
+            when {
+                showOnboarding -> AppScreen.ONBOARDING
+                showDisclaimer -> AppScreen.DISCLAIMER
+                else -> AppScreen.DECK
+            }
+        )
+    }
     var selectedAlbumId by remember { mutableStateOf<String?>(null) }
     var selectedBucketName by remember { mutableStateOf<String?>(null) }
     var isAlbumMode by remember { mutableStateOf(false) }
@@ -384,12 +383,15 @@ fun TabulaApp(
     
     // 监听图集模式切换，当切换到图集界面时检查是否需要提醒删除原图
     LaunchedEffect(isAlbumMode, sourceImageDeletionStrategy) {
-        if (isAlbumMode && sourceImageDeletionStrategy == SourceImageDeletionStrategy.ASK_EVERY_TIME) {
+        if (isAlbumMode) {
             // 获取所有待删除的原图
             val cleanableResult = albumManager.getCleanableUrisForAllAlbums()
             if (!cleanableResult.isEmpty && cleanableResult.sourceUris.isNotEmpty()) {
                 pendingSourceImageUris = cleanableResult.sourceUris
-                showSourceImageDeletionDialog = true
+                // 仅在开启归档提醒时弹出对话框，关闭时只更新清理按钮计数
+                if (sourceImageDeletionStrategy == SourceImageDeletionStrategy.ASK_EVERY_TIME) {
+                    showSourceImageDeletionDialog = true
+                }
             }
         }
     }
@@ -1220,11 +1222,19 @@ fun TabulaApp(
     val systemAlbumViewContent: @Composable () -> Unit = {
         var bucketImages by remember(selectedBucketName) { mutableStateOf<List<ImageFile>>(emptyList()) }
         LaunchedEffect(selectedBucketName) {
-             if (selectedBucketName != null) {
-                 bucketImages = withContext(Dispatchers.IO) {
-                     LocalImageRepository(context).getImagesByBucket(selectedBucketName!!)
-                 }
-             }
+            val bucketName = selectedBucketName
+            if (bucketName.isNullOrBlank()) {
+                bucketImages = emptyList()
+                return@LaunchedEffect
+            }
+
+            bucketImages = runCatching {
+                withContext(Dispatchers.IO) {
+                    LocalImageRepository(context).getImagesByBucket(bucketName)
+                }
+            }.onFailure { error ->
+                Log.e("TabulaApp", "Failed to load system bucket: $bucketName", error)
+            }.getOrDefault(emptyList())
         }
         
         SystemAlbumViewScreen(
@@ -1260,7 +1270,8 @@ fun TabulaApp(
             onSkipToMain = {
                 preferences.hasCompletedOnboarding = true
                 showOnboarding = false
-                currentScreen = AppScreen.DECK
+                // 跳过个性化，直接进入须知页
+                currentScreen = AppScreen.DISCLAIMER
             },
             onPersonalize = {
                 currentScreen = AppScreen.PERSONALIZATION
@@ -1284,7 +1295,8 @@ fun TabulaApp(
                 quickActionEnabled = preferences.quickActionButtonEnabled
                 // 刷新推荐模式
                 recommendModeRefreshKey++
-                currentScreen = AppScreen.DECK
+                // 个性化完成后进入须知页
+                currentScreen = AppScreen.DISCLAIMER
             },
             onSkip = {
                 preferences.hasCompletedOnboarding = true
@@ -1298,6 +1310,19 @@ fun TabulaApp(
                 quickActionEnabled = preferences.quickActionButtonEnabled
                 // 刷新推荐模式
                 recommendModeRefreshKey++
+                // 跳过个性化也进入须知页
+                currentScreen = AppScreen.DISCLAIMER
+            }
+        )
+        return
+    }
+
+    // ========== 使用前须知处理（全屏，个性化设置之后、进入主界面之前） ==========
+    if (currentScreen == AppScreen.DISCLAIMER) {
+        DisclaimerScreen(
+            onAcknowledged = {
+                preferences.hasAcknowledgedDisclaimer = true
+                showDisclaimer = false
                 currentScreen = AppScreen.DECK
             }
         )
@@ -1306,7 +1331,8 @@ fun TabulaApp(
 
     // 根据当前屏幕决定 前景 和 背景
     val (backgroundContent, foregroundContent) = when (currentScreen) {
-        AppScreen.ONBOARDING -> deckContent to null  // 不会到达这里，但需要完整的 when
+        AppScreen.DISCLAIMER -> deckContent to null  // 不会到达这里，但需要完整的 when
+        AppScreen.ONBOARDING -> deckContent to null  // 不会到达这里
         AppScreen.PERSONALIZATION -> deckContent to null  // 不会到达这里
         AppScreen.DECK -> deckContent to null
         AppScreen.RECYCLE_BIN -> deckContent to recycleBinContent
@@ -1334,6 +1360,7 @@ fun TabulaApp(
             currentScreen = currentScreen,
             onNavigateBack = {
                 currentScreen = when (currentScreen) {
+                    AppScreen.DISCLAIMER -> AppScreen.DISCLAIMER  // 须知页不支持返回
                     AppScreen.ONBOARDING -> AppScreen.ONBOARDING  // 引导页不支持返回
                     AppScreen.PERSONALIZATION -> AppScreen.ONBOARDING  // 个性化返回到引导页
                     AppScreen.RECYCLE_BIN -> AppScreen.DECK

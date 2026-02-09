@@ -369,7 +369,7 @@ fun SupportScreen(
                         Spacer(modifier = Modifier.height(12.dp))
                         
                         Text(
-                            text = "@Summer_233  @WIdei  @柴郡  @k  @辰小筱  @Orion",
+                            text = "@Summer_233  @WIdei  @柴郡  @k  @辰小筱  @Orion  @**豪  @**藩",
                             style = MaterialTheme.typography.bodyMedium.copy(
                                 fontWeight = FontWeight.Medium
                             ),
